@@ -1,0 +1,2 @@
+# 2026_devin_test_with_Windows_APP_C
+devinを使用してCを使ったWindows_APPのプロトタイプ
