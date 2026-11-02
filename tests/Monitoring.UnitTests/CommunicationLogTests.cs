@@ -28,16 +28,25 @@ public class CommunicationLogTests
     }
 
     [Fact]
-    public void Write_AfterLogDirDisappears_DoesNotThrow()
+    public void Write_WhenLogFileCannotBeCreated_DoesNotThrow()
     {
         // regression: a log write failure must never propagate into the
-        // communication path (disk full / removed dir → monitoring keeps running)
+        // communication path (disk full / read-only FS → monitoring keeps running).
+        // Occupy the log path with a *directory* so FileStream creation fails
+        // on every OS (deleting the file itself would still succeed on Linux).
         var dir = Path.Combine(Path.GetTempPath(), $"commlog-test-{Guid.NewGuid():N}");
-        var log = new CommunicationLog(dir, "dev");
-        log.Event("first");
-        Directory.Delete(dir, true);
-        for (int i = 0; i < 10; i++)
-            log.Event($"write {i}"); // must not throw, then disables itself
-        log.Dispose();
+        var blocker = Path.Combine(dir, $"comm-dev-{DateTime.Now:yyyyMMdd}.log");
+        Directory.CreateDirectory(blocker);
+        try
+        {
+            var log = new CommunicationLog(dir, "dev");
+            for (int i = 0; i < 10; i++)
+                log.Event($"write {i}"); // must not throw, then disables itself
+            log.Dispose();
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
     }
 }
