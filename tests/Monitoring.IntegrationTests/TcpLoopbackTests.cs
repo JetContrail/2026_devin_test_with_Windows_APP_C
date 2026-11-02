@@ -193,9 +193,11 @@ public class TcpLoopbackTests : IAsyncLifetime
         StartServer();
         await using var client = NewClient();
         await client.PollStatusAsync(CancellationToken.None);
-        StopServer();
+        // subscribe BEFORE stopping the server — Down may fire within ms of the
+        // socket dying and would be missed otherwise (CI flake on Windows)
         var events = new List<TransportLinkState>();
         client.LinkChanged += (_, s) => events.Add(s);
+        StopServer();
         // socket death is noticed by the reader loop → Down; then a poll drives the
         // connect loop, which retries forever by design → Reconnecting
         await WaitForAsync(() => events.Contains(TransportLinkState.Down), 8000);
