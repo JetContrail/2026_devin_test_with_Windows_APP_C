@@ -31,17 +31,21 @@ public class CommunicationLogTests
     public void Write_LabelsCollidingAfterSanitize_GetDistinctFiles()
     {
         // regression: "Front Door" and "Front_Door" both sanitize to
-        // "Front_Door" — without a raw-name tag they'd share one file
+        // "Front_Door" — without a raw-name tag they'd share one file;
+        // and a crafted "Front_Door-<TAG>" must not collide either
         var dir = Path.Combine(Path.GetTempPath(), $"commlog-test-{Guid.NewGuid():N}");
         try
         {
+            var frontDoorTag = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                System.Text.Encoding.UTF8.GetBytes("Front Door")))[..8];
             using (var a = new CommunicationLog(dir, "Front Door"))
                 a.Event("a");
             using (var b = new CommunicationLog(dir, "Front_Door"))
                 b.Event("b");
+            using (var c = new CommunicationLog(dir, $"Front_Door-{frontDoorTag}"))
+                c.Event("c");
             var files = Directory.GetFiles(dir).Select(Path.GetFileName).ToArray();
-            Assert.Equal(2, files.Length);
-            Assert.Contains(files, f => f!.StartsWith("comm-Front_Door-", StringComparison.Ordinal));
+            Assert.Equal(3, files.Distinct().Count());
         }
         finally
         {
@@ -57,7 +61,9 @@ public class CommunicationLogTests
         // Occupy the log path with a *directory* so FileStream creation fails
         // on every OS (deleting the file itself would still succeed on Linux).
         var dir = Path.Combine(Path.GetTempPath(), $"commlog-test-{Guid.NewGuid():N}");
-        var blocker = Path.Combine(dir, $"comm-dev-{DateTime.Now:yyyyMMdd}.log");
+        var tag = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes("dev")))[..8];
+        var blocker = Path.Combine(dir, $"comm-dev-{tag}-{DateTime.Now:yyyyMMdd}.log");
         Directory.CreateDirectory(blocker);
         try
         {

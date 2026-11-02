@@ -7,7 +7,7 @@ namespace Monitoring.Net;
 
 /// <summary>
 /// Rotating JSON-Lines communication log (protocol spec §6):
-/// logs/comm[-label[-hash]]-YYYYMMDD.log, max 16MB per file, sequence-numbered rollover.
+/// logs/comm[-label-tag]-YYYYMMDD.log, max 16MB per file, sequence-numbered rollover.
 /// Write failures are isolated: the log disables itself after repeated errors and
 /// never propagates exceptions into the communication path.
 /// </summary>
@@ -32,14 +32,11 @@ public sealed class CommunicationLog : IDisposable
     public CommunicationLog(string directory, string? label = null)
     {
         _label = label;
-        _filePrefix = label is null
-            ? "comm"
-            : Sanitize(label) is var san && san == label
-                ? $"comm-{san}"
-                // sanitized label differs from the raw name (e.g. "Front Door"
-                // vs "Front_Door") — add a stable tag of the raw label so two
-                // device names that collide after sanitization get distinct files
-                : $"comm-{san}-{StableTag(label)}";
+        // every labeled log gets a stable tag of the RAW label: sanitized name
+        // alone collides ("Front Door" vs "Front_Door"), and tagging only
+        // changed names lets an unlabeled-style name collide with a tag
+        // ("Front_Door-<TAG>" vs "Front Door") — so the tag is unconditional
+        _filePrefix = label is null ? "comm" : $"comm-{Sanitize(label)}-{StableTag(label)}";
         try
         {
             Directory.CreateDirectory(directory);

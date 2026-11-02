@@ -95,7 +95,7 @@ Event: EventSeq(4) + TimestampUnixSec(4) + CardIdLen(1) + CardId(N, UTF-8) + Res
 
 ## 6. 通信ログ
 
-- 送受信フレームをデバイス毎の `logs/comm-<DeviceName>[-<タグ>]-YYYYMMDD.log` にJSON Linesで記録: `{ts, dev, dir, type, seq, len, crcOk, note}`(デバイス名をファイル名用に正規化した結果が生の名前と異なる場合、生名のSHA-256先頭8桁をタグとして付加し衝突を回避)
+- 送受信フレームをデバイス毎の `logs/comm-<DeviceName>-<タグ>-YYYYMMDD.log` にJSON Linesで記録: `{ts, dev, dir, type, seq, len, crcOk, note}`(タグ = 生デバイス名のSHA-256先頭8桁。正規化で衝突する名前 — 例: `Front Door` / `Front_Door` / `Front_Door-<タグ>` — を一意に識別)
 - 再接続・エラーも同ファイルに記録(note="connect"/"disconnect"/"error")
 - ローテーション: 日次 + 1ファイル最大 16MB(超過で連番ファイル)
 
