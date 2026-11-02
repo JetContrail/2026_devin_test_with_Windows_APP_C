@@ -49,22 +49,39 @@ public partial class App : Application
                 TargetHost = dev.TryGetProperty("TargetHost", out var th) ? th.GetString() : null,
                 ExpectedCertThumbprint = dev.TryGetProperty("CertThumbprint", out var ct) ? ct.GetString() : null,
                 Psk = dev.TryGetProperty("PskHex", out var p) && p.GetString() is { Length: > 0 } ph
-                    ? Convert.FromHexString(ph) : null,
+                    ? TryParseHex(ph) : null,
             };
             var monitor = new DeviceMonitor(
                 new TcpDeviceClient(endpoint, log: commLog, security: security),
                 options)
             {
-                Name = dev.TryGetProperty("Name", out var n) ? n.GetString() ?? endpoint.ToString() : endpoint.ToString(),
+                Name = dev.TryGetProperty("Name", out var n) ? n.GetString() ?? endpoint.ToString()
+                    : dev.TryGetProperty("DisplayName", out var dn) ? dn.GetString() ?? endpoint.ToString()
+                    : endpoint.ToString(),
             };
             monitor.Start();
             devices.Add(monitor);
             _monitors.Add(monitor);
         }
 
+        if (devices.Count == 0)
+        {
+            MessageBox.Show(
+                "appsettings.json has no devices. Add at least one entry to \"Devices\" (or a legacy \"Device\" object).",
+                "Door Monitor — configuration error", MessageBoxButton.OK, MessageBoxImage.Error);
+            Shutdown(2);
+            return;
+        }
+
         var theme = ResolveTheme(baseDir, Environment.UserName);
         var window = new MainWindow(devices, theme);
         window.Show();
+    }
+
+    private static byte[]? TryParseHex(string hex)
+    {
+        try { return Convert.FromHexString(hex); }
+        catch (FormatException) { return null; } // placeholder/unset — treat as no PSK
     }
 
     private static IEnumerable<JsonElement> EnumerateDevices(JsonElement settings)

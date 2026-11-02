@@ -173,7 +173,6 @@ public sealed class TcpDeviceClient : IDeviceClient
                         stream = await EstablishTlsAsync(stream, ct).ConfigureAwait(false);
                     _tcp = tcp;
                     _stream = stream;
-                    _consecutiveConnectFailures = 0;
                     _log?.Event($"connect {_device}");
                     _reader = Task.Run(() => ReaderLoopAsync(), CancellationToken.None);
                     if (_security.Psk is { } psk)
@@ -181,6 +180,8 @@ public sealed class TcpDeviceClient : IDeviceClient
                         await AuthenticateAsync(psk, ct).ConfigureAwait(false);
                         _log?.Event("auth ok");
                     }
+                    // reset only after auth succeeds so persistent failures still back off
+                    _consecutiveConnectFailures = 0;
                     Raise(TransportLinkState.Up);
                 }
                 catch (OperationCanceledException) { tcp?.Dispose(); throw; }
@@ -225,8 +226,9 @@ public sealed class TcpDeviceClient : IDeviceClient
                 // embedded devices use self-signed certs that chain-validation rejects
                 RemoteCertificateValidationCallback =
                     _security.ExpectedCertThumbprint is { } expectedPin
-                        ? (_, cert, _, _) => cert is not null
-                            && string.Equals(cert.GetCertHashString(), expectedPin,
+                        ? (_, cert, _, _) => cert is X509Certificate2 c2
+                            && DateTime.Now >= c2.NotBefore && DateTime.Now <= c2.NotAfter
+                            && string.Equals(c2.GetCertHashString(), expectedPin,
                                 StringComparison.OrdinalIgnoreCase)
                         : null,
             }, ct).ConfigureAwait(false);

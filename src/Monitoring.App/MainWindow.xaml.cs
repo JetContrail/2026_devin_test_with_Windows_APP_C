@@ -91,6 +91,8 @@ public partial class MainWindow : Window
         LockText.Text = monitor.LastStatus?.Lock.ToString() ?? "-";
         DoorText.Text = monitor.LastStatus?.Door.ToString() ?? "-";
         ReaderText.Text = monitor.LastStatus?.CardReader.ToString() ?? "-";
+        DoorOpenText.Text = monitor.LastStatus is { Door: DoorState.Open } st
+            ? $"{st.DoorOpenSeconds}s" : "-";
         AlertText.Text = monitor.DoorLeftOpen ? "DOOR LEFT OPEN" : "";
         LockButton.IsEnabled = UnlockButton.IsEnabled =
             monitor.Connection == ConnectionState.Connected;
