@@ -22,11 +22,17 @@ Ethernet(TCP/IP, 常時接続ポーリング)経由で鍵・ドア・カード�
 
 ## ビルド・実行 (Windows)
 
+ローカルデモ(PSK認証あり、TLSなし — `appsettings.json` 既定と同じデモキー):
+
 ```powershell
 dotnet build Monitoring.sln
-dotnet run --project tests/FakeDevice -- --port 50001 --door open --reader online --events 3
+dotnet run --project tests/FakeDevice -- --port 50001 --psk 00112233445566778899AABBCCDDEEFF00112233445566778899AABBCCDDEEFF
 dotnet run --project src/Monitoring.App
 ```
+
+認証なしで試す場合は `--psk` を外し、appsettings.json の `PskHex` を `null` にする。
+TLS検証時: `--tls` でFakeDevice起動 → 表示されるthumbprintを `CertThumbprint` に設定し `UseTls: true`。
+本番では `CertThumbprint`/`PskHex` をデバイス固有値に置き換えること(デモキーは公開値のため本番使用禁止)。
 
 ユーザー別の表示イメージ: `src/Monitoring.App/user_themes.json` に `"<Windowsユーザー名>": { "AccentColor": "#RRGGBB", "LogoImage": "C:\\path\\logo.png", "TitleSuffix": " ..." }` を追加する(`*` がフォールバック)。
 

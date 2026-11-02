@@ -57,7 +57,10 @@ public sealed class DeviceMonitor : IAsyncDisposable
                         SetConnection(ConnectionState.Connecting);
                     break;
                 case TransportLinkState.Down:
-                    SetConnection(ConnectionState.Disconnected);
+                    // Lost persists across failed reconnect attempts — only a
+                    // successful poll proves the device recovered
+                    if (_connection != ConnectionState.Lost)
+                        SetConnection(ConnectionState.Disconnected);
                     break;
                 case TransportLinkState.Reconnecting:
                     // transport keeps retrying; surface as Lost once polls keep failing

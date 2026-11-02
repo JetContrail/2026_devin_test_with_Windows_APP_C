@@ -122,6 +122,7 @@ Event: EventSeq(4) + TimestampUnixSec(4) + CardIdLen(1) + CardId(N, UTF-8) + Res
 - `AuthHello(0x20)`: App→Dev、payload = `nonce(16B) || clientProof(32B)`、clientProof = `HMAC-SHA256(psk, 0x01 || nonce)`
 - `AuthAck(0xA0)`: Dev→App、payload = `serverProof(32B)` = `HMAC-SHA256(psk, 0x02 || nonce)`
 - ドメイン分離タグ(client=0x01, server=0x02)で反射攻撃を防止。双方検証で**相互**認証
+- リプレイ対策: デバイスは受理済みnonceを記録し再利用を拒否(ErrorResponse code=5)。平文時の盗聴リプレイはTLS(§9.1)を併用することで根本対策とする
 - 失敗: デバイスは ErrorResponse(code=4) または接続切断 → アプリは再接続バックオフして再試行(Upにはしない)
 - 実装: `src/Monitoring.Protocol/AuthCode.cs`
 

@@ -26,6 +26,8 @@ var state = new State(
 var rxBuf = new List<byte>();
 
 byte[]? psk = opts.TryGetValue("psk", out var hex) ? Convert.FromHexString(hex) : null;
+// anti-replay: reject any nonce already presented on a previous connection
+var usedNonces = new HashSet<string>();
 X509Certificate2? cert = null;
 if (opts.Flag("tls"))
 {
@@ -100,6 +102,13 @@ async Task ServeAsync(TcpClient client)
                 }
                 var nonce = payload[..AuthCode.NonceSize];
                 var proof = payload[AuthCode.NonceSize..];
+                if (!usedNonces.Add(Convert.ToHexString(nonce)))
+                {
+                    await stream.WriteAsync(FrameCodec.Encode(MessageType.ErrorResponse, seq,
+                        [5, .. "nonce replay rejected"u8]));
+                    Console.WriteLine("client auth FAILED (nonce replay)");
+                    return;
+                }
                 if (!AuthCode.VerifyClient(psk!, nonce, proof))
                 {
                     await stream.WriteAsync(FrameCodec.Encode(MessageType.ErrorResponse, seq,

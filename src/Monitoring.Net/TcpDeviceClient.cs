@@ -99,12 +99,33 @@ public sealed class TcpDeviceClient : IDeviceClient
         MessageType reqType, byte[] reqPayload, MessageType expectedResponse, CancellationToken ct,
         TimeSpan? connectBudget = null)
     {
-        await _requestGate.WaitAsync(ct).ConfigureAwait(false);
+        // a bounded request (control command) gets a deadline covering the whole
+        // pre-send path: gate wait, reconnect loop, TLS handshake and auth — an
+        // expired command must fail, never execute late on recovery
+        using var deadline = connectBudget.HasValue
+            ? CancellationTokenSource.CreateLinkedTokenSource(ct) : null;
+        if (connectBudget.HasValue) deadline!.CancelAfter(connectBudget.Value);
+        var effCt = deadline?.Token ?? ct;
+        try
+        {
+            await _requestGate.WaitAsync(effCt).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            throw new DeviceTimeoutException("command expired waiting for the request gate");
+        }
         var tcs = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
         ushort seq = 0;
         try
         {
-            await EnsureConnectedAsync(ct, connectBudget).ConfigureAwait(false);
+            try
+            {
+                await EnsureConnectedAsync(effCt).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                throw new DeviceTimeoutException("command expired waiting for the link");
+            }
             seq = _nextSequence++;
             var frame = FrameCodec.Encode(reqType, seq, reqPayload);
             _pending[seq] = new PendingRequest(tcs, expectedResponse);
@@ -150,39 +171,52 @@ public sealed class TcpDeviceClient : IDeviceClient
         }
     }
 
-    private async Task EnsureConnectedAsync(CancellationToken ct, TimeSpan? budget = null)
+    /// <summary>Each connect attempt (TCP + TLS + auth) is bounded so a peer that
+    /// stalls mid-handshake cannot freeze monitoring forever.</summary>
+    private static readonly TimeSpan ConnectAttemptTimeout = TimeSpan.FromSeconds(5);
+
+    private async Task EnsureConnectedAsync(CancellationToken ct)
     {
         if (_stream is not null) return;
         await _connectGate.WaitAsync(ct).ConfigureAwait(false);
-        var deadline = budget is { } b ? DateTimeOffset.UtcNow + b : (DateTimeOffset?)null;
         try
         {
             while (_stream is null)
             {
                 ct.ThrowIfCancellationRequested();
-                if (deadline is { } d && DateTimeOffset.UtcNow >= d)
-                    throw new DeviceTimeoutException("link down: command deadline expired");
                 TcpClient? tcp = null;
+                using var attempt = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                attempt.CancelAfter(ConnectAttemptTimeout);
                 try
                 {
                     tcp = new TcpClient();
                     ConfigureKeepAlive(tcp);
-                    await tcp.ConnectAsync(_device, ct).ConfigureAwait(false);
+                    await tcp.ConnectAsync(_device, attempt.Token).ConfigureAwait(false);
                     Stream stream = tcp.GetStream();
                     if (_security.UseTls)
-                        stream = await EstablishTlsAsync(stream, ct).ConfigureAwait(false);
+                        stream = await EstablishTlsAsync(stream, attempt.Token).ConfigureAwait(false);
                     _tcp = tcp;
                     _stream = stream;
                     _log?.Event($"connect {_device}");
                     _reader = Task.Run(() => ReaderLoopAsync(), CancellationToken.None);
                     if (_security.Psk is { } psk)
                     {
-                        await AuthenticateAsync(psk, ct).ConfigureAwait(false);
+                        await AuthenticateAsync(psk, attempt.Token).ConfigureAwait(false);
                         _log?.Event("auth ok");
                     }
                     // reset only after auth succeeds so persistent failures still back off
                     _consecutiveConnectFailures = 0;
                     Raise(TransportLinkState.Up);
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                {
+                    tcp?.Dispose();
+                    KillSocket("connect attempt timed out");
+                    int f = Interlocked.Increment(ref _consecutiveConnectFailures);
+                    _log?.Event($"connect attempt timed out #{f}");
+                    if (f == 1) Raise(TransportLinkState.Down);
+                    Raise(TransportLinkState.Reconnecting);
+                    await Task.Delay(NextBackoff(f), ct).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) { tcp?.Dispose(); throw; }
                 catch (Exception ex)
