@@ -65,17 +65,17 @@ public class DeviceMonitorTests
     public async Task ConsecutiveFailures_TransitionToLost()
     {
         var client = new FakeClient();
-        for (int i = 0; i < 3; i++) client.PollResults.Enqueue(new DeviceTimeoutException("t"));
+        for (int i = 0; i < 50; i++) client.PollResults.Enqueue(new DeviceTimeoutException("t"));
         var monitor = new DeviceMonitor(client, new MonitorOptions
         {
             PollInterval = TimeSpan.FromMilliseconds(10),
             LostAfterFailures = 3,
         });
-        ConnectionState? last = null;
-        monitor.ConnectionChanged += (_, s) => last = s;
+        var states = new List<ConnectionState>();
+        monitor.ConnectionChanged += (_, s) => states.Add(s);
 
         monitor.Start();
-        await WaitForAsync(() => last == ConnectionState.Lost);
+        await WaitForAsync(() => states.Contains(ConnectionState.Lost));
         await monitor.StopAsync();
     }
 
