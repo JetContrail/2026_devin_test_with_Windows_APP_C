@@ -1,6 +1,6 @@
 # 2026_devin_test_with_Windows_APP_C
 
-Ethernet(UDPポーリング)経由で鍵・ドア・カードリーダーを監視制御する Windows GUI アプリケーション。.NET 8 + WPF、GUIはユーザー毎に差し替え可能なプラグイン構成。
+Ethernet(UDPポーリング)経由で鍵・ドア・カードリーダーを監視制御する Windows GUI アプリケーション。.NET 8 + WPF。表示イメージ(テーマ色・ロゴ等)は `user_themes.json` でユーザー毎に切替可能。
 
 ## 構成
 
@@ -9,9 +9,7 @@ Ethernet(UDPポーリング)経由で鍵・ドア・カードリーダーを監�
 | `src/Monitoring.Protocol` | 通信フレーム・メッセージのエンコード/デコード、CRC16 |
 | `src/Monitoring.Net` | UDPクライアント(シーケンス照合・タイムアウト・再送) |
 | `src/Monitoring.Core` | ポーリングエンジン、接続状態機械、ドア開放監視 |
-| `src/Monitoring.Gui.Contract` | GUIプラグイン契約 `IMonitorGui` |
-| `src/Monitoring.AppHost` | 起動シェル(接続確立 + ユーザー別GUI DLLのロード) |
-| `src/Monitoring.App.Wpf` | 標準GUIプラグイン(WPF) |
+| `src/Monitoring.App` | WPFアプリ(単一EXE)。ユーザー別テーマ切替 |
 | `tests/FakeDevice` | 試験用デバイスシミュレータ(故障注入可) |
 | `tests/Monitoring.UnitTests` / `tests/Monitoring.IntegrationTests` | xUnit試験 |
 
@@ -25,10 +23,10 @@ Ethernet(UDPポーリング)経由で鍵・ドア・カードリーダーを監�
 ```powershell
 dotnet build Monitoring.sln
 dotnet run --project tests/FakeDevice -- --port 50001 --door open --reader online --events 3
-dotnet run --project src/Monitoring.AppHost
+dotnet run --project src/Monitoring.App
 ```
 
-GUIの切り替え: `src/Monitoring.AppHost/gui_plugins.json` に `"<Windowsユーザー名>": "<GUI DLL名>"` を追加する(`*` がフォールバック)。
+ユーザー別の表示イメージ: `src/Monitoring.App/user_themes.json` に `"<Windowsユーザー名>": { "AccentColor": "#RRGGBB", "LogoImage": "C:\\path\\logo.png", "TitleSuffix": " ..." }` を追加する(`*` がフォールバック)。
 
 ## CI
 

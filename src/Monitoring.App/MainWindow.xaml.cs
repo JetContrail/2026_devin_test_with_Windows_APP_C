@@ -1,19 +1,28 @@
 using System.Windows;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using Monitoring.Core;
-using Monitoring.Gui.Contract;
 using Monitoring.Protocol;
 
-namespace Monitoring.App.Wpf;
+namespace Monitoring.App;
 
 public partial class MainWindow : Window
 {
     private readonly DeviceMonitor _monitor;
 
-    public MainWindow(DeviceMonitor monitor, GuiContext context)
+    public MainWindow(DeviceMonitor monitor, string deviceDisplayName, UserTheme theme)
     {
         _monitor = monitor;
         InitializeComponent();
-        HeaderText.Text = $"{context.DeviceDisplayName} — user: {context.UserName}";
+        Title = $"Door Monitor{theme.TitleSuffix}";
+        HeaderText.Text = $"{deviceDisplayName} — user: {Environment.UserName}";
+        HeaderText.Foreground = new SolidColorBrush(
+            (Color)ColorConverter.ConvertFromString(theme.AccentColor));
+        if (theme.LogoImage is { } logo && File.Exists(logo))
+        {
+            LogoImage.Source = new BitmapImage(new Uri(logo, UriKind.Absolute));
+            LogoImage.Visibility = Visibility.Visible;
+        }
 
         _monitor.ConnectionChanged += (_, s) => Post(() =>
         {

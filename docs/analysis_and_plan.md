@@ -94,12 +94,10 @@
 ```
 MonitoringApp/
 ├── src/
-│   ├── Gui.Contract/         # GUIプラグイン契約 IMonitorGui(GUI非依存)
 │   ├── Core/                 # ポーリングエンジン・状態機械・ドア開放監視(GUI非依存)
 │   ├── Net/                  # UDPクライアント、シーケンス照合、タイムアウト/再送(GUI非依存)
 │   ├── Protocol/             # フレーム/メッセージ定義・エンコード/デコード・CRC16
-│   ├── AppHost/              # 起動シェル: 接続・Monitor生成 + ユーザー別GUIプラグインのロード
-│   └── App.Wpf/              # 標準GUIプラグイン(WPF)。ユーザー毎に別DLLを追加可能
+│   └── App/                  # WPFアプリ(単一EXE)。user_themes.jsonでユーザー毎の外観を切替
 ├── tests/
 │   ├── Monitoring.UnitTests/        # Protocol/Coreの単体試験
 │   ├── Monitoring.IntegrationTests/ # 実UDPループバック結合試験
@@ -110,7 +108,7 @@ MonitoringApp/
 
 設計原則:
 - Net/Protocol/CoreはUI非依存のクラスライブラリ。GUIは`DeviceMonitor`のイベント経由でのみ状態を受け取る(UIスレッドでのブロッキングI/O禁止)。
-- **GUIはユーザー毎に独立**: AppHostが `gui_plugins.json` の「Windowsユーザー名 → GUI DLL」マッピング(`*`がフォールバック)で `IMonitorGui` 実装をロードする。ユーザー別GUIは `IMonitorGui` を実装するDLLを追加するだけで、アプリ本体・通信層は全ユーザー共通。
+- **ユーザー別の外観**: 単一のWPFアプリが `user_themes.json` の「Windowsユーザー名 → テーマ(アクセント色・ロゴ画像・タイトル接尾辞、`*`フォールバック)」を読み、表示イメージのみユーザー毎に切り替える。アプリ本体・通信層は全ユーザー共通。
 
 ## 5. テスト戦略
 
@@ -131,7 +129,7 @@ CI方針: PRごとに `build → unit → integration → static analysis (Rosly
 3. **監視項目**: ✅ **鍵の状態、ドア開閉状態(開きっぱなし監視を含む)、鍵用カードリーダー**
    **制御項目**: ✅ **鍵(施錠/解錠)**
 4. **運用形態**: ✅ **24時間常時監視**
-5. **GUI構成**: ✅ **ユーザー毎にGUIが異なるため、アプリとは独立した構成(GUIプラグイン)にする**
+5. **GUI構成**: ✅ **ユーザー毎に表示イメージを変えるだけでよい(アプリ本体は単一、ユーザー別テーマ/ロゴ切替)** — 当初プラグイン構成で起案したがPO指示によりシンプル化
 
 上記を受け、`docs/protocol_spec.md` にUDPポーリングプロトコル仕様書を起案した。
 24時間常時監視の要件から、以下が特に重要となる:

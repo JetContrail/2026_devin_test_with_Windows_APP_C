@@ -1,4 +1,4 @@
-<Window x:Class="Monitoring.App.Wpf.MainWindow"
+<Window x:Class="Monitoring.App.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Door Monitor" Width="560" Height="440">
@@ -10,7 +10,10 @@
             <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
 
-        <TextBlock x:Name="HeaderText" Grid.Row="0" FontWeight="Bold" Margin="0,0,0,8"/>
+        <StackPanel Orientation="Horizontal" Grid.Row="0" Margin="0,0,0,8">
+            <Image x:Name="LogoImage" Height="24" Margin="0,0,8,0" Visibility="Collapsed"/>
+            <TextBlock x:Name="HeaderText" FontWeight="Bold" VerticalAlignment="Center"/>
+        </StackPanel>
 
         <Border Grid.Row="1" BorderBrush="#888" BorderThickness="1" Padding="8" Margin="0,0,0,8">
             <Grid>

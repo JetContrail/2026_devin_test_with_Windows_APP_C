@@ -2,14 +2,15 @@
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>
-    <RootNamespace>Monitoring.AppHost</RootNamespace>
+    <UseWPF>true</UseWPF>
+    <RootNamespace>Monitoring.App</RootNamespace>
     <AssemblyName>MonitoringApp</AssemblyName>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="../Monitoring.Gui.Contract/Monitoring.Gui.Contract.csproj" />
+    <ProjectReference Include="../Monitoring.Core/Monitoring.Core.csproj" />
   </ItemGroup>
   <ItemGroup>
     <None Include="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
-    <None Include="gui_plugins.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="user_themes.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>
