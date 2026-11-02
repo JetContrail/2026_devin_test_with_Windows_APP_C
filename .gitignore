@@ -1,0 +1,10 @@
+bin/
+obj/
+out/
+.vs/
+.vscode/
+*.user
+*.suo
+TestResults/
+coverage*.xml
+*.nupkg

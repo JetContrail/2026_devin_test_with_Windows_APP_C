@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <RootNamespace>Monitoring.AppHost</RootNamespace>
+    <AssemblyName>MonitoringApp</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Monitoring.Gui.Contract/Monitoring.Gui.Contract.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="gui_plugins.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>
