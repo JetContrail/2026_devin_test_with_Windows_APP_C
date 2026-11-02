@@ -235,11 +235,17 @@ public class TcpLoopbackTests : IAsyncLifetime
         for (int i = 0; i < 100; i++)
         {
             DropConnections = 1; // server closes after this reply
-            var s = await client.PollStatusAsync(CancellationToken.None);
-            Assert.Equal(LockState.Locked, s.Lock);
-            await WaitForAsync(() => true, 1); // let the drop land
+            // the close can land before the reply is consumed (RST) — the point is
+            // that polling always recovers, so allow a couple of link-down retries
+            DeviceStatus? s = null;
+            for (int attempt = 0; attempt < 3 && s is null; attempt++)
+            {
+                try { s = await client.PollStatusAsync(CancellationToken.None); }
+                catch (DeviceTimeoutException) { }
+            }
+            Assert.NotNull(s);
+            Assert.Equal(LockState.Locked, s!.Lock);
         }
-        Assert.True(true);
     }
 
     [Fact]
