@@ -9,18 +9,15 @@ namespace Monitoring.App;
 
 public partial class App : Application
 {
-    private DeviceMonitor? _monitor;
+    private readonly List<DeviceMonitor> _monitors = new();
 
     protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
         var baseDir = AppContext.BaseDirectory;
         var settings = JsonDocument.Parse(File.ReadAllText(Path.Combine(baseDir, "appsettings.json"))).RootElement;
-        var dev = settings.GetProperty("Device");
         var mon = settings.GetProperty("Monitor");
 
-        var endpoint = new IPEndPoint(IPAddress.Parse(dev.GetProperty("Host").GetString()!),
-            dev.GetProperty("Port").GetInt32());
         var options = new MonitorOptions
         {
             PollInterval = TimeSpan.FromMilliseconds(mon.GetProperty("PollIntervalMs").GetInt32()),
@@ -29,19 +26,60 @@ public partial class App : Application
             UnlockDurationSec = mon.GetProperty("UnlockDurationSec").GetUInt32(),
         };
 
-        var commLog = new CommunicationLog(Path.Combine(baseDir, "logs"));
-        _monitor = new DeviceMonitor(new TcpDeviceClient(endpoint, log: commLog), options);
-        _monitor.Start();
+        // write to LocalApplicationData — the install dir may be read-only
+        CommunicationLog? commLog;
+        try
+        {
+            commLog = new CommunicationLog(Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "DoorMonitor", "logs"));
+        }
+        catch (IOException)
+        {
+            commLog = null; // logging is best-effort; never block startup
+        }
+        var devices = new List<DeviceMonitor>();
+        foreach (var dev in EnumerateDevices(settings))
+        {
+            var endpoint = new IPEndPoint(IPAddress.Parse(dev.GetProperty("Host").GetString()!),
+                dev.GetProperty("Port").GetInt32());
+            var security = new DeviceSecurityOptions
+            {
+                UseTls = dev.TryGetProperty("UseTls", out var t) && t.GetBoolean(),
+                TargetHost = dev.TryGetProperty("TargetHost", out var th) ? th.GetString() : null,
+                ExpectedCertThumbprint = dev.TryGetProperty("CertThumbprint", out var ct) ? ct.GetString() : null,
+                Psk = dev.TryGetProperty("PskHex", out var p) && p.GetString() is { Length: > 0 } ph
+                    ? Convert.FromHexString(ph) : null,
+            };
+            var monitor = new DeviceMonitor(
+                new TcpDeviceClient(endpoint, log: commLog, security: security),
+                options)
+            {
+                Name = dev.TryGetProperty("Name", out var n) ? n.GetString() ?? endpoint.ToString() : endpoint.ToString(),
+            };
+            monitor.Start();
+            devices.Add(monitor);
+            _monitors.Add(monitor);
+        }
 
         var theme = ResolveTheme(baseDir, Environment.UserName);
-        var window = new MainWindow(_monitor, dev.GetProperty("DisplayName").GetString() ?? "", theme);
+        var window = new MainWindow(devices, theme);
         window.Show();
+    }
+
+    private static IEnumerable<JsonElement> EnumerateDevices(JsonElement settings)
+    {
+        if (settings.TryGetProperty("Devices", out var list))
+            foreach (var d in list.EnumerateArray())
+                yield return d;
+        else if (settings.TryGetProperty("Device", out var single)) // legacy single-device config
+            yield return single;
     }
 
     protected override async void OnExit(ExitEventArgs e)
     {
-        if (_monitor is not null)
-            await _monitor.DisposeAsync();
+        foreach (var m in _monitors)
+            await m.DisposeAsync();
         base.OnExit(e);
     }
 

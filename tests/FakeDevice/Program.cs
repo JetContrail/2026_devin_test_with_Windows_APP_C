@@ -4,9 +4,13 @@
 // Usage: FakeDevice [--port 50001] [--door open|closed] [--lock locked|unlocked]
 //        [--reader online|offline] [--drop PCT] [--corrupt] [--garbage]
 //        [--delay MS] [--events N] [--once]   (--once: serve one connection then exit)
+//        [--tls] [--psk HEX]   (--tls: self-signed cert; --psk: require AuthHello)
 using System.Buffers.Binary;
 using System.Net;
+using System.Net.Security;
 using System.Net.Sockets;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using Monitoring.Protocol;
 
 var opts = Args.Parse(args);
@@ -21,9 +25,22 @@ var state = new State(
     DoorOpenedUtc: door == DoorState.Open ? DateTimeOffset.UtcNow : null);
 var rxBuf = new List<byte>();
 
+byte[]? psk = opts.TryGetValue("psk", out var hex) ? Convert.FromHexString(hex) : null;
+X509Certificate2? cert = null;
+if (opts.Flag("tls"))
+{
+    using var rsa = RSA.Create(2048);
+    var req = new CertificateRequest("CN=FakeDevice", rsa,
+        HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+    cert = new X509Certificate2(req.CreateSelfSigned(
+        DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(5))
+        .Export(X509ContentType.Pfx));
+    Console.WriteLine($"tls enabled, cert thumbprint: {cert.GetCertHashString()}");
+}
+
 using var listener = new TcpListener(IPAddress.Any, port);
 listener.Start();
-Console.WriteLine($"FakeDevice listening on TCP {port} (door={opts.Get("door", "closed")}, lock={(byte)state.Lock})");
+Console.WriteLine($"FakeDevice listening on TCP {port} (door={opts.Get("door", "closed")}, lock={(byte)state.Lock}, tls={opts.Flag("tls")}, psk={(psk is null ? "off" : "on")})");
 
 while (true)
 {
@@ -43,7 +60,16 @@ while (true)
 
 async Task ServeAsync(TcpClient client)
 {
-    var stream = client.GetStream();
+    Stream stream = client.GetStream();
+    if (cert is not null)
+    {
+        var ssl = new SslStream(stream, leaveInnerStreamOpen: false);
+        await ssl.AuthenticateAsServerAsync(cert, clientCertificateRequired: false,
+            checkCertificateRevocation: false);
+        stream = ssl;
+        Console.WriteLine($"tls established: {ssl.SslProtocol}");
+    }
+    var authed = psk is null; // no psk configured → no handshake required
     var buf = new byte[4096];
     while (true)
     {
@@ -64,6 +90,29 @@ async Task ServeAsync(TcpClient client)
             }
             if (!FrameCodec.TryDecode(frame, out var type, out var seq, out var payload))
                 continue;
+            if (!authed)
+            {
+                if (type != MessageType.AuthHello || payload.Length != AuthCode.HelloPayloadSize)
+                {
+                    await stream.WriteAsync(FrameCodec.Encode(MessageType.ErrorResponse, seq,
+                        [3, .. "auth required"u8]));
+                    continue;
+                }
+                var nonce = payload[..AuthCode.NonceSize];
+                var proof = payload[AuthCode.NonceSize..];
+                if (!AuthCode.VerifyClient(psk!, nonce, proof))
+                {
+                    await stream.WriteAsync(FrameCodec.Encode(MessageType.ErrorResponse, seq,
+                        [4, .. "auth failed"u8]));
+                    Console.WriteLine("client auth FAILED (wrong key)");
+                    return; // close the connection
+                }
+                await stream.WriteAsync(FrameCodec.Encode(MessageType.AuthAck, seq,
+                    AuthCode.ServerProof(psk!, nonce)));
+                authed = true;
+                Console.WriteLine("client authenticated");
+                continue;
+            }
 
             var (responseType, responsePayload) = Handle(type, payload);
             var out_ = FrameCodec.Encode(responseType, seq, responsePayload);

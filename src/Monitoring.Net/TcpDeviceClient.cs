@@ -1,6 +1,10 @@
 using System.Collections.Concurrent;
 using System.Net;
+using System.Net.Security;
 using System.Net.Sockets;
+using System.Security.Authentication;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using Monitoring.Protocol;
 
 namespace Monitoring.Net;
@@ -23,16 +27,18 @@ public sealed class TcpDeviceClient : IDeviceClient
     private readonly CommunicationLog? _log;
     private readonly TimeSpan _backoffBase;
     private readonly TimeSpan _backoffMax;
+    private readonly DeviceSecurityOptions _security;
     private readonly Random _jitter = new();
 
     private readonly SemaphoreSlim _requestGate = new(1, 1);
     private readonly SemaphoreSlim _connectGate = new(1, 1);
-    private readonly ConcurrentDictionary<ushort, TaskCompletionSource<byte[]>> _pending = new();
+    private sealed record PendingRequest(TaskCompletionSource<byte[]> Tcs, MessageType Expected);
+    private readonly ConcurrentDictionary<ushort, PendingRequest> _pending = new();
     private readonly List<byte> _rx = new();
     private readonly byte[] _readBuf = new byte[ReadChunk];
 
     private TcpClient? _tcp;
-    private NetworkStream? _stream;
+    private Stream? _stream;
     private Task? _reader;
     private ushort _nextSequence;
     private int _consecutiveTimeouts;
@@ -47,7 +53,8 @@ public sealed class TcpDeviceClient : IDeviceClient
         int failuresBeforeReconnect = 3,
         CommunicationLog? log = null,
         TimeSpan? backoffBase = null,
-        TimeSpan? backoffMax = null)
+        TimeSpan? backoffMax = null,
+        DeviceSecurityOptions? security = null)
     {
         _device = deviceEndPoint;
         _responseTimeoutMs = responseTimeoutMs;
@@ -55,6 +62,7 @@ public sealed class TcpDeviceClient : IDeviceClient
         _log = log;
         _backoffBase = backoffBase ?? TimeSpan.FromSeconds(1);
         _backoffMax = backoffMax ?? TimeSpan.FromSeconds(30);
+        _security = security ?? DeviceSecurityOptions.None;
     }
 
     public async Task<DeviceStatus> PollStatusAsync(CancellationToken ct)
@@ -72,29 +80,34 @@ public sealed class TcpDeviceClient : IDeviceClient
         return FrameCodec.DecodeCardEvents(payload);
     }
 
+    /// <summary>Control commands must not ride an endless reconnect: if the link is
+    /// down, the request fails fast instead of executing a stale command on recovery.</summary>
+    private static readonly TimeSpan CommandConnectBudget = TimeSpan.FromSeconds(2);
+
     public async Task<CommandResponse> SendLockCommandAsync(
         LockCommandKind command, uint unlockDurationSec, CancellationToken ct)
     {
         var payload = await RequestAsync(MessageType.LockCommand,
-            FrameCodec.BuildLockPayload(command, unlockDurationSec), MessageType.CommandResponse, ct)
-            .ConfigureAwait(false);
+            FrameCodec.BuildLockPayload(command, unlockDurationSec), MessageType.CommandResponse, ct,
+            CommandConnectBudget).ConfigureAwait(false);
         return FrameCodec.DecodeCommandResponse(payload);
     }
 
     // ---- transport ----
 
     private async Task<byte[]> RequestAsync(
-        MessageType reqType, byte[] reqPayload, MessageType expectedResponse, CancellationToken ct)
+        MessageType reqType, byte[] reqPayload, MessageType expectedResponse, CancellationToken ct,
+        TimeSpan? connectBudget = null)
     {
         await _requestGate.WaitAsync(ct).ConfigureAwait(false);
         var tcs = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
         ushort seq = 0;
         try
         {
-            await EnsureConnectedAsync(ct).ConfigureAwait(false);
+            await EnsureConnectedAsync(ct, connectBudget).ConfigureAwait(false);
             seq = _nextSequence++;
             var frame = FrameCodec.Encode(reqType, seq, reqPayload);
-            _pending[seq] = tcs;
+            _pending[seq] = new PendingRequest(tcs, expectedResponse);
             try
             {
                 await _stream!.WriteAsync(frame, ct).ConfigureAwait(false);
@@ -137,30 +150,44 @@ public sealed class TcpDeviceClient : IDeviceClient
         }
     }
 
-    private async Task EnsureConnectedAsync(CancellationToken ct)
+    private async Task EnsureConnectedAsync(CancellationToken ct, TimeSpan? budget = null)
     {
         if (_stream is not null) return;
         await _connectGate.WaitAsync(ct).ConfigureAwait(false);
+        var deadline = budget is { } b ? DateTimeOffset.UtcNow + b : (DateTimeOffset?)null;
         try
         {
             while (_stream is null)
             {
                 ct.ThrowIfCancellationRequested();
+                if (deadline is { } d && DateTimeOffset.UtcNow >= d)
+                    throw new DeviceTimeoutException("link down: command deadline expired");
+                TcpClient? tcp = null;
                 try
                 {
-                    var tcp = new TcpClient();
+                    tcp = new TcpClient();
                     ConfigureKeepAlive(tcp);
                     await tcp.ConnectAsync(_device, ct).ConfigureAwait(false);
+                    Stream stream = tcp.GetStream();
+                    if (_security.UseTls)
+                        stream = await EstablishTlsAsync(stream, ct).ConfigureAwait(false);
                     _tcp = tcp;
-                    _stream = tcp.GetStream();
+                    _stream = stream;
                     _consecutiveConnectFailures = 0;
                     _log?.Event($"connect {_device}");
                     _reader = Task.Run(() => ReaderLoopAsync(), CancellationToken.None);
+                    if (_security.Psk is { } psk)
+                    {
+                        await AuthenticateAsync(psk, ct).ConfigureAwait(false);
+                        _log?.Event("auth ok");
+                    }
                     Raise(TransportLinkState.Up);
                 }
-                catch (OperationCanceledException) { throw; }
+                catch (OperationCanceledException) { tcp?.Dispose(); throw; }
                 catch (Exception ex)
                 {
+                    tcp?.Dispose();
+                    KillSocket($"connect/auth failed: {ex.Message}");
                     int failures = Interlocked.Increment(ref _consecutiveConnectFailures);
                     _log?.Event($"connect failed #{failures}: {ex.Message}");
                     if (failures == 1) Raise(TransportLinkState.Down);
@@ -181,6 +208,67 @@ public sealed class TcpDeviceClient : IDeviceClient
             _backoffMax.TotalMilliseconds);
         double j = 1.0 + (_jitter.NextDouble() * 0.4 - 0.2); // ±20%
         return TimeSpan.FromMilliseconds(exp * j);
+    }
+
+    /// <summary>TLS handshake + certificate pinning (spec §9).</summary>
+    private async Task<Stream> EstablishTlsAsync(Stream inner, CancellationToken ct)
+    {
+        var ssl = new SslStream(inner, leaveInnerStreamOpen: false);
+        try
+        {
+            await ssl.AuthenticateAsClientAsync(new SslClientAuthenticationOptions
+            {
+                TargetHost = _security.TargetHost ?? _device.Address.ToString(),
+                EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
+                CertificateRevocationCheckMode = X509RevocationMode.NoCheck,
+                // when a thumbprint pin is configured it IS the trust decision:
+                // embedded devices use self-signed certs that chain-validation rejects
+                RemoteCertificateValidationCallback =
+                    _security.ExpectedCertThumbprint is { } expectedPin
+                        ? (_, cert, _, _) => cert is not null
+                            && string.Equals(cert.GetCertHashString(), expectedPin,
+                                StringComparison.OrdinalIgnoreCase)
+                        : null,
+            }, ct).ConfigureAwait(false);
+        }
+        catch
+        {
+            ssl.Dispose();
+            throw;
+        }
+        var thumb = ssl.RemoteCertificate?.GetCertHashString();
+        if (_security.ExpectedCertThumbprint is { } expected &&
+            !string.Equals(thumb, expected, StringComparison.OrdinalIgnoreCase))
+        {
+            ssl.Dispose();
+            throw new DeviceProtocolException(
+                $"device certificate thumbprint mismatch (got {thumb}, expected {expected})");
+        }
+        _log?.Event($"tls ok ({ssl.SslProtocol}, cert {thumb})");
+        return ssl;
+    }
+
+    /// <summary>AuthHello(nonce) → AuthAck(HMAC-SHA256(psk, nonce)) before link is Up.</summary>
+    private async Task AuthenticateAsync(byte[] psk, CancellationToken ct)
+    {
+        var nonce = AuthCode.NewNonce();
+        var hello = nonce.Concat(AuthCode.ClientProof(psk, nonce)).ToArray();
+        ushort seq = _nextSequence++;
+        var tcs = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _pending[seq] = new PendingRequest(tcs, MessageType.AuthAck);
+        try
+        {
+            await _stream!.WriteAsync(FrameCodec.Encode(MessageType.AuthHello, seq, hello), ct)
+                .ConfigureAwait(false);
+            _log?.Frame("tx", (byte)MessageType.AuthHello, seq, hello.Length, true);
+            var ack = await tcs.Task.WaitAsync(TimeSpan.FromSeconds(2), ct).ConfigureAwait(false);
+            if (!AuthCode.VerifyServer(psk, nonce, ack))
+                throw new DeviceProtocolException("device rejected authentication");
+        }
+        finally
+        {
+            _pending.TryRemove(seq, out _);
+        }
     }
 
     private static void ConfigureKeepAlive(TcpClient tcp)
@@ -220,7 +308,14 @@ public sealed class TcpDeviceClient : IDeviceClient
         {
             // resync: drop bytes until buffer starts with the magic
             int idx = IndexOfMagic(_rx);
-            if (idx < 0) { _rx.Clear(); return; }
+            if (idx < 0)
+            {
+                // keep a trailing 0x4A — it may be the first half of a split magic
+                bool partialMagic = _rx.Count > 0 && _rx[^1] == 0x4A;
+                _rx.Clear();
+                if (partialMagic) _rx.Add(0x4A);
+                return;
+            }
             if (idx > 0)
             {
                 _consecutiveMalformed++;
@@ -229,30 +324,49 @@ public sealed class TcpDeviceClient : IDeviceClient
             }
             if (_rx.Count < FrameCodec.HeaderSize + FrameCodec.CrcSize) return;
             int payloadLen = (_rx[6] << 8) | _rx[7];
-            int frameLen = FrameCodec.HeaderSize + payloadLen + FrameCodec.CrcSize;
-            if (_rx.Count < frameLen) return;
-
-            var frame = _rx.GetRange(0, frameLen).ToArray();
-            _rx.RemoveRange(0, frameLen);
-            if (!FrameCodec.TryDecode(frame, out var type, out var seq, out var payload))
+            if (payloadLen > FrameCodec.MaxPayload)
             {
+                // corrupt length field — drop only the magic byte and rescan
                 _consecutiveMalformed++;
-                _log?.Frame("rx", frame[3], 0, frameLen, false, "bad frame dropped");
+                _log?.Event($"bad payloadLen {payloadLen}; dropping magic byte");
+                _rx.RemoveAt(0);
                 if (_consecutiveMalformed >= MaxConsecutiveMalformed)
                     KillSocket("too many malformed frames");
                 continue;
             }
+            int frameLen = FrameCodec.HeaderSize + payloadLen + FrameCodec.CrcSize;
+            if (_rx.Count < frameLen) return;
+
+            var frame = _rx.GetRange(0, frameLen).ToArray();
+            if (!FrameCodec.TryDecode(frame, out var type, out var seq, out var payload))
+            {
+                _consecutiveMalformed++;
+                _log?.Frame("rx", frame[3], 0, frameLen, false, "bad frame dropped");
+                // drop only the leading magic byte so a valid frame hiding inside
+                // the bogus length can still be recovered
+                _rx.RemoveAt(0);
+                if (_consecutiveMalformed >= MaxConsecutiveMalformed)
+                    KillSocket("too many malformed frames");
+                continue;
+            }
+            _rx.RemoveRange(0, frameLen);
             _consecutiveMalformed = 0;
             _log?.Frame("rx", (byte)type, seq, payload.Length, true);
             if (type == MessageType.ErrorResponse)
             {
                 if (_pending.TryRemove(seq, out var t0))
-                    t0.TrySetException(new DeviceProtocolException(
+                    t0.Tcs.TrySetException(new DeviceProtocolException(
                         $"Device ErrorResponse (code {payload.FirstOrDefault()})"));
                 continue;
             }
+            if (_pending.TryGetValue(seq, out var pending) && pending.Expected != type)
+            {
+                // same sequence but wrong message type — drop, let the request time out
+                _log?.Event($"type mismatch seq={seq}: got {type}, expected {pending.Expected}");
+                continue;
+            }
             if (_pending.TryRemove(seq, out var t))
-                t.TrySetResult(payload);
+                t.Tcs.TrySetResult(payload);
             else
                 _log?.Event($"unmatched response seq={seq} type={type} dropped");
         }
@@ -271,13 +385,15 @@ public sealed class TcpDeviceClient : IDeviceClient
         var stream = Interlocked.Exchange(ref _stream, null);
         if (stream is null) return;
         _log?.Event($"disconnect: {reason}");
-        try { stream.Dispose(); } catch (ObjectDisposedException) { }
+        // dispose the socket first: it unblocks any pending stream read
+        // (SslStream.Dispose can otherwise wait on a read that never returns)
         try { _tcp?.Dispose(); } catch (ObjectDisposedException) { }
         _tcp = null;
+        try { stream.Dispose(); } catch (ObjectDisposedException) { }
         _rx.Clear();
         foreach (var kv in _pending)
             if (_pending.TryRemove(kv.Key, out var t))
-                t.TrySetException(new DeviceTimeoutException($"link down: {reason}"));
+                t.Tcs.TrySetException(new DeviceTimeoutException($"link down: {reason}"));
         Raise(TransportLinkState.Down);
     }
 

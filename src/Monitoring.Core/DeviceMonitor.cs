@@ -51,8 +51,10 @@ public sealed class DeviceMonitor : IAsyncDisposable
             switch (s)
             {
                 case TransportLinkState.Up:
-                    _consecutiveFailures = 0;
-                    SetConnection(ConnectionState.Connected);
+                    // transport up is not proof the device responds: only a
+                    // successful poll may clear Lost/Connected (see OnPollSucceeded)
+                    if (_connection != ConnectionState.Lost)
+                        SetConnection(ConnectionState.Connecting);
                     break;
                 case TransportLinkState.Down:
                     SetConnection(ConnectionState.Disconnected);
@@ -65,6 +67,9 @@ public sealed class DeviceMonitor : IAsyncDisposable
             }
         };
     }
+
+    /// <summary>Display name for the device (multi-device setups).</summary>
+    public string Name { get; set; } = "";
 
     public ConnectionState Connection => _connection;
     public DeviceStatus? LastStatus { get; private set; }

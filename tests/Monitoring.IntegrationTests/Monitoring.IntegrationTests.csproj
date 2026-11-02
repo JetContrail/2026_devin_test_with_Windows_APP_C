@@ -3,7 +3,7 @@
     <TargetFramework>net8.0</TargetFramework>
     <IsPackable>false</IsPackable>
     <!-- CA1707: xUnit Method_Scenario naming; CA1001/CA1051/CA2213: test-fixture fields/disposal via IAsyncLifetime -->
-    <NoWarn>$(NoWarn);CA1707;CA1001;CA1051;CA2213</NoWarn>
+    <NoWarn>$(NoWarn);CA1707;CA1001;CA1051;CA2213;CA1832</NoWarn> <!-- CA1832: AsSpan unusable inside async methods (C#12) -->
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
