@@ -31,7 +31,7 @@ copy src\Monitoring.App\appsettings.demo.json src\Monitoring.App\bin\Debug\net8.
 dotnet run --project src/Monitoring.App
 ```
 
-本番の既定 `appsettings.json` は `UseTls: true` + `CertThumbprint`/`PskHex` プレースホルダ。プレースホルダのままではPSK未設定として起動し、デバイス固有値への置き換えが必須。
+本番の既定 `appsettings.json` は `UseTls: true` + `CertThumbprint`/`PskHex` プレースホルダ。プレースホルダのままでは起動しない(フェイルクローズ)。TLS/PSKの省略は起動エラー — 実験・デモ用途のみデバイス毎に `AllowInsecure: true` を明示する(`appsettings.demo.json` は設定済み)。
 TLS検証時: `--tls` でFakeDevice起動 → 表示されるthumbprintを `CertThumbprint` に設定。
 
 ユーザー別の表示イメージ: `src/Monitoring.App/user_themes.json` に `"<Windowsユーザー名>": { "AccentColor": "#RRGGBB", "LogoImage": "C:\\path\\logo.png", "TitleSuffix": " ..." }` を追加する(`*` がフォールバック)。

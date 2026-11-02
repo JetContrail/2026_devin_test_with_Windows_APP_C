@@ -22,6 +22,8 @@ public class TcpLoopbackTests : IAsyncLifetime
     public bool CorruptReply;            // break CRC on replies
     public bool NeverReply;              // read requests, never answer
     public int SplitReplyBytes;          // write replies in N-byte chunks (partial frames)
+    public byte[]? RequiredPsk;          // require AuthHello and verify the proof
+    public int AuthDelayMs;              // delay before answering AuthHello
 
     public Task InitializeAsync() => Task.CompletedTask;
 
@@ -63,6 +65,7 @@ public class TcpLoopbackTests : IAsyncLifetime
 
     private async Task ServeAsync(TcpClient c)
     {
+        bool authed = RequiredPsk is null;
         try
         {
             var stream = c.GetStream();
@@ -82,6 +85,26 @@ public class TcpLoopbackTests : IAsyncLifetime
                     if (NeverReply) continue;
                     if (!FrameCodec.TryDecode(frame, out var type, out var seq, out var payload))
                         continue;
+                    if (!authed)
+                    {
+                        if (type != MessageType.AuthHello || payload.Length != AuthCode.HelloPayloadSize)
+                        {
+                            await stream.WriteAsync(FrameCodec.Encode(MessageType.ErrorResponse, seq, [3]));
+                            continue;
+                        }
+                        var nonce = payload[..AuthCode.NonceSize];
+                        var proof = payload[AuthCode.NonceSize..];
+                        if (AuthDelayMs > 0) await Task.Delay(AuthDelayMs);
+                        if (!AuthCode.VerifyClient(RequiredPsk!, nonce, proof))
+                        {
+                            await stream.WriteAsync(FrameCodec.Encode(MessageType.ErrorResponse, seq, [4]));
+                            return;
+                        }
+                        await stream.WriteAsync(FrameCodec.Encode(MessageType.AuthAck, seq,
+                            AuthCode.ServerProof(RequiredPsk!, nonce)));
+                        authed = true;
+                        continue;
+                    }
                     var body = Reply(type, payload);
                     if (body is null) continue;
                     var out_ = FrameCodec.Encode(ReplyType(type), seq, body);
@@ -111,7 +134,7 @@ public class TcpLoopbackTests : IAsyncLifetime
             (byte)CardReaderStatus.Online, 0, 0,
         },
         MessageType.LockCommand => new byte[] { (byte)CommandResult.Ok, payload[0] == 2 ? (byte)2 : (byte)1 },
-        MessageType.GetCardEvents => new byte[] { 0 },
+        MessageType.GetCardEvents => new byte[] { 0, 0, 0, 1, 0 }, // bootId=1, 0 events
         _ => null,
     };
 
@@ -248,6 +271,27 @@ public class TcpLoopbackTests : IAsyncLifetime
             Assert.NotNull(s);
             Assert.Equal(LockState.Locked, s!.Lock);
         }
+    }
+
+    [Fact]
+    public async Task AuthCancelled_ReauthenticatesOnNextPoll()
+    {
+        // regression: a caller-cancelled auth left _stream set but unauthenticated,
+        // so the next request skipped the handshake and the device kept rejecting
+        StartServer();
+        RequiredPsk = Convert.FromHexString("00112233445566778899AABBCCDDEEFF00112233445566778899AABBCCDDEEFF");
+        AuthDelayMs = 400; // auth reply arrives after the caller deadline
+        await using var client = new TcpDeviceClient(new IPEndPoint(IPAddress.Loopback, _port), 500,
+            failuresBeforeReconnect: 3,
+            backoffBase: TimeSpan.FromMilliseconds(20), backoffMax: TimeSpan.FromMilliseconds(200),
+            security: new DeviceSecurityOptions { Psk = RequiredPsk });
+
+        using var cts = new CancellationTokenSource(150);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => client.PollStatusAsync(cts.Token));
+
+        // the next poll must reconnect and complete a fresh handshake
+        var s = await client.PollStatusAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(LockState.Locked, s.Lock);
     }
 
     [Fact]

@@ -27,34 +27,33 @@ public partial class App : Application
         };
 
         // write to LocalApplicationData — the install dir may be read-only
-        CommunicationLog? commLog;
-        try
-        {
-            commLog = new CommunicationLog(Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "DoorMonitor", "logs"));
-        }
-        catch (IOException)
-        {
-            commLog = null; // logging is best-effort; never block startup
-        }
+        var logDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "DoorMonitor", "logs");
         var devices = new List<DeviceMonitor>();
         foreach (var dev in EnumerateDevices(settings))
         {
             var endpoint = new IPEndPoint(IPAddress.Parse(dev.GetProperty("Host").GetString()!),
                 dev.GetProperty("Port").GetInt32());
+            var name = dev.TryGetProperty("Name", out var n) ? n.GetString() ?? endpoint.ToString()
+                : dev.TryGetProperty("DisplayName", out var dn) ? dn.GetString() ?? endpoint.ToString()
+                : endpoint.ToString();
             var security = DeviceSecurityOptions.FromConfig(
                 useTls: dev.TryGetProperty("UseTls", out var t) && t.GetBoolean(),
                 targetHost: dev.TryGetProperty("TargetHost", out var th) ? th.GetString() : null,
                 certThumbprint: dev.TryGetProperty("CertThumbprint", out var ct) ? ct.GetString() : null,
-                pskHex: dev.TryGetProperty("PskHex", out var p) ? p.GetString() : null);
+                pskHex: dev.TryGetProperty("PskHex", out var p) ? p.GetString() : null,
+                allowInsecure: dev.TryGetProperty("AllowInsecure", out var ai) && ai.GetBoolean());
+            // per-device log: frames/events carry the device label, and one
+            // device's log failure cannot affect the others
+            CommunicationLog? commLog = null;
+            try { commLog = new CommunicationLog(logDir, name); }
+            catch (IOException) { /* logging is best-effort */ }
             var monitor = new DeviceMonitor(
                 new TcpDeviceClient(endpoint, log: commLog, security: security),
                 options)
             {
-                Name = dev.TryGetProperty("Name", out var n) ? n.GetString() ?? endpoint.ToString()
-                    : dev.TryGetProperty("DisplayName", out var dn) ? dn.GetString() ?? endpoint.ToString()
-                    : endpoint.ToString(),
+                Name = name,
             };
             monitor.Start();
             devices.Add(monitor);

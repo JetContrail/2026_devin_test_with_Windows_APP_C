@@ -15,6 +15,10 @@ public sealed record MonitorOptions
     public TimeSpan DoorOpenAlertThreshold { get; init; } = TimeSpan.FromSeconds(60);
     /// <summary>Automatic re-lock delay sent with Unlock commands (0 = stay unlocked).</summary>
     public uint UnlockDurationSec { get; init; }
+    /// <summary>Per-poll deadline covering connect+request. While the link is down a
+    /// poll would otherwise block inside the reconnect loop forever, and the device
+    /// could never be judged Lost.</summary>
+    public TimeSpan PollTimeout { get; init; } = TimeSpan.FromSeconds(5);
 }
 
 public sealed record MonitorSnapshot(
@@ -37,6 +41,7 @@ public sealed class DeviceMonitor : IAsyncDisposable
     private CancellationTokenSource? _run;
     private Task? _loop;
     private uint _lastCardEventSeq;
+    private uint _lastCardEventBootId;
     private int _consecutiveFailures;
     private bool _lastOpenDoor;
     private ConnectionState _connection = ConnectionState.Disconnected;
@@ -116,10 +121,18 @@ public sealed class DeviceMonitor : IAsyncDisposable
         {
             try
             {
-                var status = await _client.PollStatusAsync(ct).ConfigureAwait(false);
+                // bound each poll: with the link down, an unbounded poll would sit
+                // inside the reconnect loop forever and the device could never be Lost
+                using var pollDeadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                pollDeadline.CancelAfter(_options.PollTimeout);
+                var status = await _client.PollStatusAsync(pollDeadline.Token).ConfigureAwait(false);
                 OnPollSucceeded(status, ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
+            catch (OperationCanceledException)
+            {
+                OnPollFailed(new DeviceTimeoutException("poll deadline expired"));
+            }
             catch (Exception ex)
             {
                 OnPollFailed(ex);
@@ -152,8 +165,21 @@ public sealed class DeviceMonitor : IAsyncDisposable
     {
         try
         {
-            var events = await _client.GetCardEventsAsync(_lastCardEventSeq, ct).ConfigureAwait(false);
-            foreach (var e in events.OrderBy(e => e.EventSeq))
+            var page = await _client.GetCardEventsAsync(_lastCardEventSeq, ct).ConfigureAwait(false);
+            if (page.BootId != _lastCardEventBootId)
+            {
+                _lastCardEventBootId = page.BootId;
+                if (_lastCardEventSeq > 0)
+                {
+                    // real generation change mid-run: the old cursor would skip the
+                    // new generation's early events — reset and refetch from 0.
+                    // (cursor==0 → this page already holds everything; refetching
+                    // could lose events on devices that delete served entries)
+                    _lastCardEventSeq = 0;
+                    page = await _client.GetCardEventsAsync(0, ct).ConfigureAwait(false);
+                }
+            }
+            foreach (var e in page.Events.OrderBy(e => e.EventSeq))
             {
                 _lastCardEventSeq = Math.Max(_lastCardEventSeq, e.EventSeq);
                 CardEventReceived?.Invoke(this, e);

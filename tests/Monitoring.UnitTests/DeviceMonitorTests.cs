@@ -14,20 +14,29 @@ public class DeviceMonitorTests
         public DeviceStatus Next = new(LockState.Locked, DoorState.Closed, 0,
             CardReaderStatus.Online, 0, false, false);
         public List<CardEvent> Events { get; } = new();
+        public uint BootId { get; set; } = 1;
+        public int CardEventsRequests;
+        public bool HangPoll;   // simulate a dead device: never responds
         public (LockCommandKind Cmd, uint Dur)? LastCommand;
         public event EventHandler<TransportLinkState>? LinkChanged;
         public void EmitLink(TransportLinkState s) => LinkChanged?.Invoke(this, s);
 
-        public Task<DeviceStatus> PollStatusAsync(CancellationToken ct)
+        public async Task<DeviceStatus> PollStatusAsync(CancellationToken ct)
         {
             PollCount++;
+            if (HangPoll)
+                await Task.Delay(Timeout.Infinite, ct); // cancelled by PollTimeout
             if (PollResults.Count > 0 && PollResults.Dequeue() is { } ex)
-                return Task.FromException<DeviceStatus>(ex);
-            return Task.FromResult(Next);
+                throw ex;
+            return Next;
         }
 
-        public Task<IReadOnlyList<CardEvent>> GetCardEventsAsync(uint lastSeq, CancellationToken ct)
-            => Task.FromResult<IReadOnlyList<CardEvent>>(Events.Where(e => e.EventSeq > lastSeq).ToList());
+        public Task<CardEventsPage> GetCardEventsAsync(uint lastSeq, CancellationToken ct)
+        {
+            CardEventsRequests++;
+            return Task.FromResult(new CardEventsPage(BootId,
+                Events.Where(e => e.EventSeq > lastSeq).ToList()));
+        }
 
         public Task<CommandResponse> SendLockCommandAsync(LockCommandKind c, uint d, CancellationToken ct)
         {
@@ -136,6 +145,51 @@ public class DeviceMonitorTests
         await WaitForAsync(() => received.Count == 1);
         await monitor.StopAsync();
         Assert.Equal("CARD-1", received[0].CardId);
+    }
+
+    [Fact]
+    public async Task BootIdChange_ResetsCursorAndRefetches()
+    {
+        // regression: a rebooted device restarts its event sequence — the old
+        // cursor must be dropped or early events of the new generation are lost
+        var client = new FakeClient
+        {
+            Next = new DeviceStatus(LockState.Locked, DoorState.Closed, 0,
+                CardReaderStatus.Online, PendingCardEvents: 1, false, false),
+        };
+        client.Events.Add(new CardEvent(100, DateTimeOffset.UtcNow, "CARD-OLD", true));
+        var monitor = new DeviceMonitor(client, new MonitorOptions { PollInterval = TimeSpan.FromMilliseconds(10) });
+        var received = new List<CardEvent>();
+        monitor.CardEventReceived += (_, e) => received.Add(e);
+        monitor.Start();
+        await WaitForAsync(() => received.Count == 1);
+
+        // device reboots: new generation, sequence restarts at 1
+        client.BootId = 2;
+        client.Events.Clear();
+        client.Events.Add(new CardEvent(1, DateTimeOffset.UtcNow, "CARD-NEW", true));
+        await WaitForAsync(() => received.Count == 2);
+        await monitor.StopAsync();
+        Assert.Equal("CARD-NEW", received[1].CardId);
+    }
+
+    [Fact]
+    public async Task UnreachableDevice_TransitionsToLost()
+    {
+        // regression: with the link down a poll used to sit inside the reconnect
+        // loop forever — the device could never be judged Lost
+        var client = new FakeClient { HangPoll = true };
+        var monitor = new DeviceMonitor(client, new MonitorOptions
+        {
+            PollInterval = TimeSpan.FromMilliseconds(10),
+            PollTimeout = TimeSpan.FromMilliseconds(50),
+            LostAfterFailures = 2,
+        });
+        var states = new List<ConnectionState>();
+        monitor.ConnectionChanged += (_, s) => states.Add(s);
+        monitor.Start();
+        await WaitForAsync(() => states.Contains(ConnectionState.Lost));
+        await monitor.StopAsync();
     }
 
     [Fact]

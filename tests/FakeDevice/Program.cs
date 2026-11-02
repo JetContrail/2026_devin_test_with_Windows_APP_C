@@ -5,6 +5,7 @@
 //        [--reader online|offline] [--drop PCT] [--corrupt] [--garbage]
 //        [--delay MS] [--events N] [--once]   (--once: serve one connection then exit)
 //        [--tls] [--psk HEX]   (--tls: self-signed cert; --psk: require AuthHello)
+//        [--boot-id N]   (event-sequence generation id in CardEventsResponse, spec v0.4)
 using System.Buffers.Binary;
 using System.Net;
 using System.Net.Security;
@@ -20,6 +21,7 @@ var reader = opts.Get("reader", "online") == "offline" ? CardReaderStatus.Offlin
 var rng = new Random();
 var events = new List<(uint Seq, string CardId, bool Accepted)>();
 uint eventSeq = 0;
+uint bootId = (uint)opts.Get("boot-id", 1);
 var state = new State(
     Lock: opts.Get("lock", "locked") == "unlocked" ? LockState.Unlocked : LockState.Locked,
     DoorOpenedUtc: door == DoorState.Open ? DateTimeOffset.UtcNow : null);
@@ -172,7 +174,11 @@ byte[] BuildStatus()
 byte[] BuildEvents(uint lastSeq)
 {
     var list = events.Where(e => e.Seq > lastSeq).ToList();
-    var p = new List<byte> { (byte)list.Count };
+    var p = new List<byte>();
+    var head4 = new byte[4];
+    BinaryPrimitives.WriteUInt32BigEndian(head4, bootId);
+    p.AddRange(head4);
+    p.Add((byte)list.Count);
     foreach (var e in list)
     {
         var head = new byte[9];
