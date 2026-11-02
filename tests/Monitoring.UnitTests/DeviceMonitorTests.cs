@@ -15,6 +15,8 @@ public class DeviceMonitorTests
             CardReaderStatus.Online, 0, false, false);
         public List<CardEvent> Events { get; } = new();
         public (LockCommandKind Cmd, uint Dur)? LastCommand;
+        public event EventHandler<TransportLinkState>? LinkChanged;
+        public void EmitLink(TransportLinkState s) => LinkChanged?.Invoke(this, s);
 
         public Task<DeviceStatus> PollStatusAsync(CancellationToken ct)
         {

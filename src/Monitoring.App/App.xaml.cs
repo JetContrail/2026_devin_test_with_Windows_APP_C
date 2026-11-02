@@ -29,7 +29,8 @@ public partial class App : Application
             UnlockDurationSec = mon.GetProperty("UnlockDurationSec").GetUInt32(),
         };
 
-        _monitor = new DeviceMonitor(new UdpDeviceClient(endpoint), options);
+        var commLog = new CommunicationLog(Path.Combine(baseDir, "logs"));
+        _monitor = new DeviceMonitor(new TcpDeviceClient(endpoint, log: commLog), options);
         _monitor.Start();
 
         var theme = ResolveTheme(baseDir, Environment.UserName);

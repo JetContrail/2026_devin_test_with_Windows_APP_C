@@ -3,7 +3,7 @@ using Monitoring.Protocol;
 
 namespace Monitoring.Core;
 
-public enum ConnectionState { Disconnected, Connected, Lost }
+public enum ConnectionState { Disconnected, Connecting, Connected, Reconnecting, Lost }
 
 public sealed record MonitorOptions
 {
@@ -46,6 +46,24 @@ public sealed class DeviceMonitor : IAsyncDisposable
         _client = client;
         _options = options ?? new MonitorOptions();
         _clock = clock ?? (() => DateTimeOffset.UtcNow);
+        _client.LinkChanged += (_, s) =>
+        {
+            switch (s)
+            {
+                case TransportLinkState.Up:
+                    _consecutiveFailures = 0;
+                    SetConnection(ConnectionState.Connected);
+                    break;
+                case TransportLinkState.Down:
+                    SetConnection(ConnectionState.Disconnected);
+                    break;
+                case TransportLinkState.Reconnecting:
+                    // transport keeps retrying; surface as Lost once polls keep failing
+                    if (_connection != ConnectionState.Lost)
+                        SetConnection(ConnectionState.Reconnecting);
+                    break;
+            }
+        };
     }
 
     public ConnectionState Connection => _connection;

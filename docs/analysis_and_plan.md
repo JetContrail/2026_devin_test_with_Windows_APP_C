@@ -95,12 +95,13 @@
 MonitoringApp/
 ├── src/
 │   ├── Core/                 # ポーリングエンジン・状態機械・ドア開放監視(GUI非依存)
-│   ├── Net/                  # UDPクライアント、シーケンス照合、タイムアウト/再送(GUI非依存)
+│   ├── Net/                  # TCPクライアント、シーケンス照合、タイムアウト、自動再接続(指数バックオフ)、KeepAlive、通信ログ(GUI非依存)
 │   ├── Protocol/             # フレーム/メッセージ定義・エンコード/デコード・CRC16
 │   └── App/                  # WPFアプリ(単一EXE)。user_themes.jsonでユーザー毎の外観を切替
 ├── tests/
 │   ├── Monitoring.UnitTests/        # Protocol/Coreの単体試験
-│   ├── Monitoring.IntegrationTests/ # 実UDPループバック結合試験
+│   ├── Monitoring.IntegrationTests/ # 実TCPループバック結合試験(切断/再接続/異常パケット)
+│   ├── LongRun/                     # 24時間連続運転試験ランナー
 │   └── FakeDevice/                  # 試験用デバイスシミュレータ(故障注入可)
 ├── docs/
 └── .github/workflows/               # build + test (windows-latest)
@@ -125,13 +126,13 @@ CI方針: PRごとに `build → unit → integration → static analysis (Rosly
 ## 6. プロダクトオーナーへの確認事項 — 回答済み(2026-11-02)
 
 1. **言語方針**: ✅ **C# (.NET 8 + WPF) 承認**
-2. **対向デバイス通信**: ✅ **UDP。本アプリ側からのポーリング(request/response)**
+2. **対向デバイス通信**: ✅ **TCP/IP。本アプリ側からのポーリング(request/response)。自動再接続・KeepAlive・通信ログ保存**(当初UDP指示→2026-11-02の構成指示によりTCPに変更)
 3. **監視項目**: ✅ **鍵の状態、ドア開閉状態(開きっぱなし監視を含む)、鍵用カードリーダー**
    **制御項目**: ✅ **鍵(施錠/解錠)**
 4. **運用形態**: ✅ **24時間常時監視**
 5. **GUI構成**: ✅ **ユーザー毎に表示イメージを変えるだけでよい(アプリ本体は単一、ユーザー別テーマ/ロゴ切替)** — 当初プラグイン構成で起案したがPO指示によりシンプル化
 
-上記を受け、`docs/protocol_spec.md` にUDPポーリングプロトコル仕様書を起案した。
+上記を受け、`docs/protocol_spec.md` にTCPポーリングプロトコル仕様書を起案した。追加の構成指示(RULES.md)により、警告ゼロ・静的解析・フォーマット統一・Ethernet必須試験(通信断/再接続/タイムアウト/異常パケット/相手停止/再接続100回/24h)も実装した。
 24時間常時監視の要件から、以下が特に重要となる:
 
 - ポーリング応答なし → 接続状態を `Lost` に遷移しUIへ即通知
