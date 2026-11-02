@@ -5,6 +5,8 @@
     <UseWPF>true</UseWPF>
     <RootNamespace>Monitoring.App</RootNamespace>
     <AssemblyName>MonitoringApp</AssemblyName>
+    <!-- CA1001: Application lifetime owns _monitor; released in OnExit -->
+    <NoWarn>$(NoWarn);CA1001</NoWarn>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../Monitoring.Core/Monitoring.Core.csproj" />

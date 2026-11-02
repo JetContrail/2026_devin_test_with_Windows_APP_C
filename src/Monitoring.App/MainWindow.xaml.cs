@@ -1,3 +1,4 @@
+using System.IO;
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -18,7 +19,8 @@ public partial class MainWindow : Window
         HeaderText.Text = $"{deviceDisplayName} — user: {Environment.UserName}";
         HeaderText.Foreground = new SolidColorBrush(
             (Color)ColorConverter.ConvertFromString(theme.AccentColor));
-        if (theme.LogoImage is { } logo && File.Exists(logo))
+        var logo = theme.LogoImage;
+        if (logo is not null && File.Exists(logo))
         {
             LogoImage.Source = new BitmapImage(new Uri(logo, UriKind.Absolute));
             LogoImage.Visibility = Visibility.Visible;
