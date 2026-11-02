@@ -19,4 +19,29 @@ public sealed record DeviceSecurityOptions
     public byte[]? Psk { get; init; }
 
     public static readonly DeviceSecurityOptions None = new();
+
+    /// <summary>Parse a hex key. A present-but-invalid value must fail closed:
+    /// silently ignoring it would run door control without authentication.</summary>
+    public static byte[] ParseHexRequired(string hex, string keyName)
+    {
+        try { return Convert.FromHexString(hex); }
+        catch (FormatException)
+        {
+            throw new InvalidOperationException(
+                $"appsettings.json: \"{keyName}\" is set but not valid hex. " +
+                "Replace the placeholder with the device key, or set it to null to disable PSK.");
+        }
+    }
+
+    /// <summary>Build options from raw config fields (all strings optional).
+    /// Throws InvalidOperationException on a present-but-invalid pskHex.</summary>
+    public static DeviceSecurityOptions FromConfig(
+        bool useTls, string? targetHost, string? certThumbprint, string? pskHex)
+        => new()
+        {
+            UseTls = useTls,
+            TargetHost = targetHost,
+            ExpectedCertThumbprint = certThumbprint,
+            Psk = pskHex is { Length: > 0 } ? ParseHexRequired(pskHex, "PskHex") : null,
+        };
 }
