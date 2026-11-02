@@ -34,4 +34,8 @@ public sealed record CardEvent(
     string CardId,
     bool Accepted);
 
+/// <summary>CardEventsResponse payload: the device's event-sequence generation
+/// (BootId changes on reboot) plus the events newer than the requested cursor.</summary>
+public sealed record CardEventsPage(uint BootId, IReadOnlyList<CardEvent> Events);
+
 public sealed record CommandResponse(CommandResult Result, LockState Lock);

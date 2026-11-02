@@ -34,12 +34,10 @@ public sealed class TcpDeviceClient : IDeviceClient
     private readonly SemaphoreSlim _connectGate = new(1, 1);
     private sealed record PendingRequest(TaskCompletionSource<byte[]> Tcs, MessageType Expected);
     private readonly ConcurrentDictionary<ushort, PendingRequest> _pending = new();
-    private readonly List<byte> _rx = new();
-    private readonly byte[] _readBuf = new byte[ReadChunk];
-
     private TcpClient? _tcp;
     private Stream? _stream;
     private Task? _reader;
+    private int _connGeneration;
     private ushort _nextSequence;
     private int _consecutiveTimeouts;
     private int _consecutiveMalformed;
@@ -72,12 +70,12 @@ public sealed class TcpDeviceClient : IDeviceClient
         return FrameCodec.DecodeStatusResponse(payload);
     }
 
-    public async Task<IReadOnlyList<CardEvent>> GetCardEventsAsync(uint lastSeq, CancellationToken ct)
+    public async Task<CardEventsPage> GetCardEventsAsync(uint lastSeq, CancellationToken ct)
     {
         var payload = await RequestAsync(MessageType.GetCardEvents,
             FrameCodec.BuildGetCardEventsPayload(lastSeq), MessageType.CardEventsResponse, ct)
             .ConfigureAwait(false);
-        return FrameCodec.DecodeCardEvents(payload);
+        return FrameCodec.DecodeCardEventsPage(payload);
     }
 
     /// <summary>Control commands must not ride an endless reconnect: if the link is
@@ -129,12 +127,32 @@ public sealed class TcpDeviceClient : IDeviceClient
             seq = _nextSequence++;
             var frame = FrameCodec.Encode(reqType, seq, reqPayload);
             _pending[seq] = new PendingRequest(tcs, expectedResponse);
+            // check the deadline right before writing: a command that expired during
+            // gate/connect/TLS/auth must never reach the wire
             try
             {
-                await _stream!.WriteAsync(frame, ct).ConfigureAwait(false);
+                effCt.ThrowIfCancellationRequested();
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                _pending.TryRemove(seq, out _);
+                throw new DeviceTimeoutException("command expired before send");
+            }
+            try
+            {
+                await _stream!.WriteAsync(frame, effCt).ConfigureAwait(false);
                 _log?.Frame("tx", (byte)reqType, seq, reqPayload.Length, true);
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                // deadline hit mid-write: delivery is unknown, and the stream may hold
+                // a partial frame — drop the connection and report it
+                _pending.TryRemove(seq, out _);
+                KillSocket("command deadline during send");
+                throw new DeviceTimeoutException(
+                    "command deadline expired while sending; the device may have received it");
+            }
+            catch (Exception ex)
             {
                 _pending.TryRemove(seq, out _);
                 KillSocket("send failed");
@@ -198,7 +216,11 @@ public sealed class TcpDeviceClient : IDeviceClient
                     _tcp = tcp;
                     _stream = stream;
                     _log?.Event($"connect {_device}");
-                    _reader = Task.Run(() => ReaderLoopAsync(), CancellationToken.None);
+                    // the reader owns THIS connection's stream/buffer — a dying
+                    // reader from a previous generation can never kill the new link
+                    var gen = Interlocked.Increment(ref _connGeneration);
+                    var owned = stream;
+                    _reader = Task.Run(() => ReaderLoopAsync(owned, gen), CancellationToken.None);
                     if (_security.Psk is { } psk)
                     {
                         await AuthenticateAsync(psk, attempt.Token).ConfigureAwait(false);
@@ -255,7 +277,10 @@ public sealed class TcpDeviceClient : IDeviceClient
             {
                 TargetHost = _security.TargetHost ?? _device.Address.ToString(),
                 EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
-                CertificateRevocationCheckMode = X509RevocationMode.NoCheck,
+                // pinning replaces chain+revocation trust; without a pin, enforce
+                // chain validation AND online revocation checking
+                CertificateRevocationCheckMode = _security.ExpectedCertThumbprint is null
+                    ? X509RevocationMode.Online : X509RevocationMode.NoCheck,
                 // when a thumbprint pin is configured it IS the trust decision:
                 // embedded devices use self-signed certs that chain-validation rejects
                 RemoteCertificateValidationCallback =
@@ -320,72 +345,76 @@ public sealed class TcpDeviceClient : IDeviceClient
         catch (SocketException) { /* option unsupported on this platform — keep going */ }
     }
 
-    private async Task ReaderLoopAsync()
+    private async Task ReaderLoopAsync(Stream stream, int generation)
     {
+        var readBuf = new byte[ReadChunk];
+        var rx = new List<byte>();
         try
         {
             while (!_disposed)
             {
-                int n = await _stream!.ReadAsync(_readBuf).ConfigureAwait(false);
+                int n = await stream.ReadAsync(readBuf).ConfigureAwait(false);
                 if (n == 0) break; // peer closed
-                _rx.AddRange(_readBuf.AsSpan(0, n).ToArray());
-                DrainFrames();
+                rx.AddRange(readBuf.AsSpan(0, n).ToArray());
+                DrainFrames(rx);
             }
         }
         catch (Exception ex) when (ex is IOException or SocketException or ObjectDisposedException or NullReferenceException)
         { /* socket error or disposed mid-read — fall through to Down */ }
-        KillSocket("reader ended");
+        // only kill the link if this reader still owns the current connection —
+        // a stale reader ending late must not tear down a newer connection
+        KillSocketIfCurrent(stream, generation, "reader ended");
     }
 
     /// <summary>Extract complete frames from the receive buffer; resync on bad magic/CRC.</summary>
-    private void DrainFrames()
+    private void DrainFrames(List<byte> rx)
     {
         while (true)
         {
             // resync: drop bytes until buffer starts with the magic
-            int idx = IndexOfMagic(_rx);
+            int idx = IndexOfMagic(rx);
             if (idx < 0)
             {
                 // keep a trailing 0x4A — it may be the first half of a split magic
-                bool partialMagic = _rx.Count > 0 && _rx[^1] == 0x4A;
-                _rx.Clear();
-                if (partialMagic) _rx.Add(0x4A);
+                bool partialMagic = rx.Count > 0 && rx[^1] == 0x4A;
+                rx.Clear();
+                if (partialMagic) rx.Add(0x4A);
                 return;
             }
             if (idx > 0)
             {
                 _consecutiveMalformed++;
                 _log?.Event($"resync: dropped {idx} bytes");
-                _rx.RemoveRange(0, idx);
+                rx.RemoveRange(0, idx);
             }
-            if (_rx.Count < FrameCodec.HeaderSize + FrameCodec.CrcSize) return;
-            int payloadLen = (_rx[6] << 8) | _rx[7];
+            if (rx.Count < FrameCodec.HeaderSize + FrameCodec.CrcSize) return;
+            int payloadLen = (rx[6] << 8) | rx[7];
             if (payloadLen > FrameCodec.MaxPayload)
             {
                 // corrupt length field — drop only the magic byte and rescan
                 _consecutiveMalformed++;
                 _log?.Event($"bad payloadLen {payloadLen}; dropping magic byte");
-                _rx.RemoveAt(0);
+                rx.RemoveAt(0);
                 if (_consecutiveMalformed >= MaxConsecutiveMalformed)
                     KillSocket("too many malformed frames");
                 continue;
             }
             int frameLen = FrameCodec.HeaderSize + payloadLen + FrameCodec.CrcSize;
-            if (_rx.Count < frameLen) return;
+            if (rx.Count < frameLen) return;
 
-            var frame = _rx.GetRange(0, frameLen).ToArray();
+            var frame = rx.GetRange(0, frameLen).ToArray();
             if (!FrameCodec.TryDecode(frame, out var type, out var seq, out var payload))
             {
                 _consecutiveMalformed++;
                 _log?.Frame("rx", frame[3], 0, frameLen, false, "bad frame dropped");
                 // drop only the leading magic byte so a valid frame hiding inside
                 // the bogus length can still be recovered
-                _rx.RemoveAt(0);
+                rx.RemoveAt(0);
                 if (_consecutiveMalformed >= MaxConsecutiveMalformed)
                     KillSocket("too many malformed frames");
                 continue;
             }
-            _rx.RemoveRange(0, frameLen);
+            rx.RemoveRange(0, frameLen);
             _consecutiveMalformed = 0;
             _log?.Frame("rx", (byte)type, seq, payload.Length, true);
             if (type == MessageType.ErrorResponse)
@@ -420,13 +449,26 @@ public sealed class TcpDeviceClient : IDeviceClient
     {
         var stream = Interlocked.Exchange(ref _stream, null);
         if (stream is null) return;
+        DoKillSocket(stream, reason);
+    }
+
+    /// <summary>Kill only if (stream, generation) is still the live connection.
+    /// Generation is a belt-and-braces guard alongside stream identity.</summary>
+    private void KillSocketIfCurrent(Stream stream, int generation, string reason)
+    {
+        if (generation != Volatile.Read(ref _connGeneration) || !ReferenceEquals(stream, _stream))
+            return;
+        KillSocket(reason);
+    }
+
+    private void DoKillSocket(Stream stream, string reason)
+    {
         _log?.Event($"disconnect: {reason}");
         // dispose the socket first: it unblocks any pending stream read
         // (SslStream.Dispose can otherwise wait on a read that never returns)
         try { _tcp?.Dispose(); } catch (ObjectDisposedException) { }
         _tcp = null;
         try { stream.Dispose(); } catch (ObjectDisposedException) { }
-        _rx.Clear();
         foreach (var kv in _pending)
             if (_pending.TryRemove(kv.Key, out var t))
                 t.Tcs.TrySetException(new DeviceTimeoutException($"link down: {reason}"));

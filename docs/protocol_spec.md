@@ -1,8 +1,10 @@
-# 通信プロトコル仕様書 (TCP/IP + 自動再接続 + 認証/暗号) — v0.3
+# 通信プロトコル仕様書 (TCP/IP + 自動再接続 + 認証/暗号) — v0.4
 
 対向デバイス(鍵・ドア・カードリーダー制御盤)との通信仕様。
 v0.1(UDP)から **TCP/IP永続接続** へ変更(2026-11-02 指示)。フレーム形式は継続。
 v0.3: 既定値確定、**複数デバイス必須**、**認証/暗号必須**(TLS + PSKハンドシェイク)を追加(2026-11-02 設計承認)。
+v0.4: CardEventsResponse に **BootId(世代ID)** を追加 — デバイス再起動でイベント連番がリセットされても
+アプリがカーソルを適切に初期化できるようにする(2026-11-02 レビュー指摘対応)。
 
 ## 1. 基本方針
 
@@ -55,14 +57,17 @@ v0.3: 既定値確定、**複数デバイス必須**、**認証/暗号必須**(T
 | 1 | PendingCardEvents | 未送カードイベント件数 |
 | 1 | DeviceStatus | bit0: ドア開きっぱなしアラート, bit1: デバイス警告, bit2: 将来予約 |
 
-### 4.2 CardEventsResponse (`0x82`)
+### 4.2 CardEventsResponse (`0x82`) — v0.4
 
 | サイズ | フィールド |
 |---|---|
+| 4 | BootId — イベント連番の世代ID。デバイス再起動・連番リセット時に必ず変化させる(単調増加・乱数・起動時刻等、実装自由) |
 | 1 | Count |
 | Count×可変 | Events[] |
 
 Event: EventSeq(4) + TimestampUnixSec(4) + CardIdLen(1) + CardId(N, UTF-8) + Result(1: 0=Denied,1=Accepted)
+
+- アプリは BootId 変化を検出したら `LastSeq` カーソルを 0 にリセットし、新世代のイベントを先頭から再取得する。TCP切断・再接続のみではカーソルを維持する(取得済みイベントの重複・欠落防止)。
 
 ### 4.3 LockCommand (`0x10`)
 
@@ -90,7 +95,7 @@ Event: EventSeq(4) + TimestampUnixSec(4) + CardIdLen(1) + CardId(N, UTF-8) + Res
 
 ## 6. 通信ログ
 
-- 送受信フレームを `logs/comm-YYYYMMDD.log` にJSON Linesで記録: `{ts, dir, type, seq, len, crcOk, note}`
+- 送受信フレームをデバイス毎の `logs/comm-<DeviceName>-YYYYMMDD.log` にJSON Linesで記録: `{ts, dev, dir, type, seq, len, crcOk, note}`
 - 再接続・エラーも同ファイルに記録(note="connect"/"disconnect"/"error")
 - ローテーション: 日次 + 1ファイル最大 16MB(超過で連番ファイル)
 
@@ -128,7 +133,9 @@ Event: EventSeq(4) + TimestampUnixSec(4) + CardIdLen(1) + CardId(N, UTF-8) + Res
 
 ### 9.3 設定
 
-`appsettings.json` のデバイス毎に: `UseTls`, `TargetHost`, `CertThumbprint`, `PskHex`。
+`appsettings.json` のデバイス毎に: `UseTls`, `TargetHost`, `CertThumbprint`, `PskHex`, `AllowInsecure`。
+
+**認証/暗号は必須**: `UseTls` または `PskHex` の未設定は起動エラー(フェイルクローズ)。実験・デモ用途のみ `AllowInsecure: true` の明示指定で平文/無認証を許容する。証明書ピン留め使用時はピンが信頼判定のため失効チェーン確認は行わない。ピン未指定の通常CA検証時はオンライン失効確認を行う。
 
 ## 10. 複数デバイス(v0.3〜, 必須)
 

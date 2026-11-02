@@ -89,13 +89,17 @@ public static class FrameCodec
         return p;
     }
 
-    public static IReadOnlyList<CardEvent> DecodeCardEvents(ReadOnlySpan<byte> payload)
+    /// <summary>CardEventsResponse payload (spec v0.4): u32 bootId | u8 count | events.
+    /// bootId identifies the device's event-sequence generation; a reboot must change it
+    /// so the monitor knows to reset its lastSeq cursor.</summary>
+    public static CardEventsPage DecodeCardEventsPage(ReadOnlySpan<byte> payload)
     {
-        if (payload.Length < 1)
-            throw new FormatException("CardEventsResponse payload too short");
+        if (payload.Length < 5)
+            throw new FormatException($"CardEventsResponse payload too short: {payload.Length}");
+        uint bootId = BinaryPrimitives.ReadUInt32BigEndian(payload);
         var events = new List<CardEvent>();
-        int count = payload[0];
-        int pos = 1;
+        int count = payload[4];
+        int pos = 5;
         for (int i = 0; i < count; i++)
         {
             if (pos + 9 > payload.Length)
@@ -110,6 +114,6 @@ public static class FrameCodec
             events.Add(new CardEvent(seq, DateTimeOffset.FromUnixTimeSeconds(ts), cardId, accepted));
             pos += 10 + idLen;
         }
-        return events;
+        return new CardEventsPage(bootId, events);
     }
 }

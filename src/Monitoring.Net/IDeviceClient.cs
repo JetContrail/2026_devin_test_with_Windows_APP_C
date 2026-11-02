@@ -11,7 +11,9 @@ public interface IDeviceClient : IAsyncDisposable
     event EventHandler<TransportLinkState>? LinkChanged;
 
     Task<DeviceStatus> PollStatusAsync(CancellationToken ct);
-    Task<IReadOnlyList<CardEvent>> GetCardEventsAsync(uint lastSeq, CancellationToken ct);
+    /// <summary>Returns events newer than lastSeq plus the device's BootId so the
+    /// caller can detect a rebooted device (spec v0.4).</summary>
+    Task<CardEventsPage> GetCardEventsAsync(uint lastSeq, CancellationToken ct);
     Task<CommandResponse> SendLockCommandAsync(LockCommandKind command, uint unlockDurationSec, CancellationToken ct);
 }
 

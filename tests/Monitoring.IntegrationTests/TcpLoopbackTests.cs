@@ -111,7 +111,7 @@ public class TcpLoopbackTests : IAsyncLifetime
             (byte)CardReaderStatus.Online, 0, 0,
         },
         MessageType.LockCommand => new byte[] { (byte)CommandResult.Ok, payload[0] == 2 ? (byte)2 : (byte)1 },
-        MessageType.GetCardEvents => new byte[] { 0 },
+        MessageType.GetCardEvents => new byte[] { 0, 0, 0, 1, 0 }, // bootId=1, 0 events
         _ => null,
     };
 

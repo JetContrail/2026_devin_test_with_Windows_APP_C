@@ -34,14 +34,23 @@ public sealed record DeviceSecurityOptions
     }
 
     /// <summary>Build options from raw config fields (all strings optional).
-    /// Throws InvalidOperationException on a present-but-invalid pskHex.</summary>
+    /// Throws InvalidOperationException on a present-but-invalid pskHex.
+    /// Security is mandatory: TLS+PSK are required unless allowInsecure is set
+    /// explicitly (lab/demo use only — auth is a project requirement).</summary>
     public static DeviceSecurityOptions FromConfig(
-        bool useTls, string? targetHost, string? certThumbprint, string? pskHex)
-        => new()
+        bool useTls, string? targetHost, string? certThumbprint, string? pskHex,
+        bool allowInsecure = false)
+    {
+        if (!allowInsecure && (!useTls || pskHex is not { Length: > 0 }))
+            throw new InvalidOperationException(
+                "appsettings.json: secure transport is required — set \"UseTls\": true and a valid \"PskHex\", " +
+                "or set \"AllowInsecure\": true explicitly for lab/demo use only.");
+        return new()
         {
             UseTls = useTls,
             TargetHost = targetHost,
             ExpectedCertThumbprint = certThumbprint,
             Psk = pskHex is { Length: > 0 } ? ParseHexRequired(pskHex, "PskHex") : null,
         };
+    }
 }

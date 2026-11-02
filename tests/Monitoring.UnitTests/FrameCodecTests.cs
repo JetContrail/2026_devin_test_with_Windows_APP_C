@@ -69,8 +69,12 @@ public class FrameCodecTests
     [Fact]
     public void CardEvents_RoundTripThroughBuildAndDecode()
     {
-        // Encode one event the way FakeDevice does
-        var payload = new List<byte> { 1 };
+        // Encode one event the way FakeDevice does (spec v0.4: u32 bootId prefix)
+        var payload = new List<byte>();
+        var boot = new byte[4];
+        BinaryPrimitives.WriteUInt32BigEndian(boot, 0x11223344);
+        payload.AddRange(boot);
+        payload.Add(1);
         var head = new byte[9];
         BinaryPrimitives.WriteUInt32BigEndian(head.AsSpan(0), 42);
         BinaryPrimitives.WriteUInt32BigEndian(head.AsSpan(4), 1_700_000_000);
@@ -79,10 +83,11 @@ public class FrameCodecTests
         payload.AddRange("AB12"u8.ToArray());
         payload.Add(1);
 
-        var events = FrameCodec.DecodeCardEvents(payload.ToArray());
-        Assert.Single(events);
-        Assert.Equal(42u, events[0].EventSeq);
-        Assert.Equal("AB12", events[0].CardId);
-        Assert.True(events[0].Accepted);
+        var page = FrameCodec.DecodeCardEventsPage(payload.ToArray());
+        Assert.Equal(0x11223344u, page.BootId);
+        Assert.Single(page.Events);
+        Assert.Equal(42u, page.Events[0].EventSeq);
+        Assert.Equal("AB12", page.Events[0].CardId);
+        Assert.True(page.Events[0].Accepted);
     }
 }
