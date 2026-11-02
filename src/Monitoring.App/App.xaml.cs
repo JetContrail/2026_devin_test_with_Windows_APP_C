@@ -49,7 +49,7 @@ public partial class App : Application
                 TargetHost = dev.TryGetProperty("TargetHost", out var th) ? th.GetString() : null,
                 ExpectedCertThumbprint = dev.TryGetProperty("CertThumbprint", out var ct) ? ct.GetString() : null,
                 Psk = dev.TryGetProperty("PskHex", out var p) && p.GetString() is { Length: > 0 } ph
-                    ? TryParseHex(ph) : null,
+                    ? ParseHexRequired(ph, "PskHex") : null,
             };
             var monitor = new DeviceMonitor(
                 new TcpDeviceClient(endpoint, log: commLog, security: security),
@@ -78,10 +78,17 @@ public partial class App : Application
         window.Show();
     }
 
-    private static byte[]? TryParseHex(string hex)
+    private static byte[] ParseHexRequired(string hex, string key)
     {
         try { return Convert.FromHexString(hex); }
-        catch (FormatException) { return null; } // placeholder/unset — treat as no PSK
+        catch (FormatException)
+        {
+            // a present-but-invalid PskHex (e.g. the shipped placeholder) must fail
+            // closed — silently skipping auth would run the door control unsecured
+            throw new InvalidOperationException(
+                $"appsettings.json: \"{key}\" is set but not valid hex. " +
+                "Replace the placeholder with the device key, or set it to null to disable PSK.");
+        }
     }
 
     private static IEnumerable<JsonElement> EnumerateDevices(JsonElement settings)
