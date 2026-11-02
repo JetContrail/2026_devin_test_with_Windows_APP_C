@@ -250,8 +250,10 @@ public class TlsAuthTests : IAsyncLifetime
         var events = new List<TransportLinkState>();
         c2.LinkChanged += (_, st) => events.Add(st);
         _ = c2.PollStatusAsync(CancellationToken.None);
-        await Task.Delay(300);
-        Assert.Contains(TransportLinkState.Reconnecting, events);
+        await WaitForAsync(() =>
+        {
+            lock (events) return events.Contains(TransportLinkState.Reconnecting);
+        });
         // c1 unaffected
         Assert.Equal(LockState.Locked, (await c1.PollStatusAsync(CancellationToken.None)).Lock);
     }
