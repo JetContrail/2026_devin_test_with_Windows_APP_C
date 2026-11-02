@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <RootNamespace>Monitoring.App</RootNamespace>
+    <AssemblyName>MonitoringApp</AssemblyName>
+    <!-- CA1001: Application lifetime owns _monitor; released in OnExit -->
+    <NoWarn>$(NoWarn);CA1001</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Monitoring.Core/Monitoring.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="user_themes.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,4 @@
+{
+  "*": { "AccentColor": "#2E6DA4", "LogoImage": null, "TitleSuffix": "" },
+  "admin": { "AccentColor": "#7A1F1F", "LogoImage": null, "TitleSuffix": " [Admin]" }
+}

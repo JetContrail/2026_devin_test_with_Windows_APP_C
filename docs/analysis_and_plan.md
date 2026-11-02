@@ -94,15 +94,14 @@
 ```
 MonitoringApp/
 ├── src/
-│   ├── Gui.Contract/         # GUIプラグイン契約 IMonitorGui(GUI非依存)
 │   ├── Core/                 # ポーリングエンジン・状態機械・ドア開放監視(GUI非依存)
-│   ├── Net/                  # UDPクライアント、シーケンス照合、タイムアウト/再送(GUI非依存)
+│   ├── Net/                  # TCPクライアント、シーケンス照合、タイムアウト、自動再接続(指数バックオフ)、KeepAlive、通信ログ(GUI非依存)
 │   ├── Protocol/             # フレーム/メッセージ定義・エンコード/デコード・CRC16
-│   ├── AppHost/              # 起動シェル: 接続・Monitor生成 + ユーザー別GUIプラグインのロード
-│   └── App.Wpf/              # 標準GUIプラグイン(WPF)。ユーザー毎に別DLLを追加可能
+│   └── App/                  # WPFアプリ(単一EXE)。user_themes.jsonでユーザー毎の外観を切替
 ├── tests/
 │   ├── Monitoring.UnitTests/        # Protocol/Coreの単体試験
-│   ├── Monitoring.IntegrationTests/ # 実UDPループバック結合試験
+│   ├── Monitoring.IntegrationTests/ # 実TCPループバック結合試験(切断/再接続/異常パケット)
+│   ├── LongRun/                     # 24時間連続運転試験ランナー
 │   └── FakeDevice/                  # 試験用デバイスシミュレータ(故障注入可)
 ├── docs/
 └── .github/workflows/               # build + test (windows-latest)
@@ -110,7 +109,7 @@ MonitoringApp/
 
 設計原則:
 - Net/Protocol/CoreはUI非依存のクラスライブラリ。GUIは`DeviceMonitor`のイベント経由でのみ状態を受け取る(UIスレッドでのブロッキングI/O禁止)。
-- **GUIはユーザー毎に独立**: AppHostが `gui_plugins.json` の「Windowsユーザー名 → GUI DLL」マッピング(`*`がフォールバック)で `IMonitorGui` 実装をロードする。ユーザー別GUIは `IMonitorGui` を実装するDLLを追加するだけで、アプリ本体・通信層は全ユーザー共通。
+- **ユーザー別の外観**: 単一のWPFアプリが `user_themes.json` の「Windowsユーザー名 → テーマ(アクセント色・ロゴ画像・タイトル接尾辞、`*`フォールバック)」を読み、表示イメージのみユーザー毎に切り替える。アプリ本体・通信層は全ユーザー共通。
 
 ## 5. テスト戦略
 
@@ -127,13 +126,15 @@ CI方針: PRごとに `build → unit → integration → static analysis (Rosly
 ## 6. プロダクトオーナーへの確認事項 — 回答済み(2026-11-02)
 
 1. **言語方針**: ✅ **C# (.NET 8 + WPF) 承認**
-2. **対向デバイス通信**: ✅ **UDP。本アプリ側からのポーリング(request/response)**
+2. **対向デバイス通信**: ✅ **TCP/IP。本アプリ側からのポーリング(request/response)。自動再接続・KeepAlive・通信ログ保存**(当初UDP指示→2026-11-02の構成指示によりTCPに変更)
 3. **監視項目**: ✅ **鍵の状態、ドア開閉状態(開きっぱなし監視を含む)、鍵用カードリーダー**
    **制御項目**: ✅ **鍵(施錠/解錠)**
 4. **運用形態**: ✅ **24時間常時監視**
-5. **GUI構成**: ✅ **ユーザー毎にGUIが異なるため、アプリとは独立した構成(GUIプラグイン)にする**
+5. **GUI構成**: ✅ **ユーザー毎に表示イメージを変えるだけでよい(アプリ本体は単一、ユーザー別テーマ/ロゴ切替)** — 当初プラグイン構成で起案したがPO指示によりシンプル化
 
-上記を受け、`docs/protocol_spec.md` にUDPポーリングプロトコル仕様書を起案した。
+上記を受け、`docs/protocol_spec.md` にTCPポーリングプロトコル仕様書を起案した。追加の構成指示(RULES.md)により、警告ゼロ・静的解析・フォーマット統一・Ethernet必須試験(通信断/再接続/タイムアウト/異常パケット/相手停止/再接続100回/24h)も実装した。
+
+2026-11-02 設計承認時の追加要件(回答済み): **複数デバイス監視は必須**(`appsettings.json` の `Devices` 配列でデバイス毎に独立したクライアント/モニタを生成、GUIはデバイスセレクタで切替)、**認証/暗号は必要**(TLS 1.2/1.3 + 証明書サムプリントピン留め + PSK相互認証ハンドシェイク。仕様は protocol_spec.md §9/§10)。
 24時間常時監視の要件から、以下が特に重要となる:
 
 - ポーリング応答なし → 接続状態を `Lost` に遷移しUIへ即通知

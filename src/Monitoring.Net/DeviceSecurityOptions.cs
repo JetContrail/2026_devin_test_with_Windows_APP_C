@@ -1,0 +1,47 @@
+namespace Monitoring.Net;
+
+/// <summary>Transport security for a device connection (protocol spec §9).
+/// TLS encrypts the stream and pins the device certificate; PSK adds the
+/// application-level AuthHello/AuthAck handshake.</summary>
+public sealed record DeviceSecurityOptions
+{
+    /// <summary>Wrap the TCP stream in TLS (SslStream).</summary>
+    public bool UseTls { get; init; }
+
+    /// <summary>TLS server name (SNI / cert CN check). Defaults to the device IP.</summary>
+    public string? TargetHost { get; init; }
+
+    /// <summary>Pinned device certificate thumbprint (hex, no separators).
+    /// When set, a TLS device presenting any other certificate is rejected.</summary>
+    public string? ExpectedCertThumbprint { get; init; }
+
+    /// <summary>Pre-shared key for the AuthHello/AuthAck handshake. Null disables auth.</summary>
+    public byte[]? Psk { get; init; }
+
+    public static readonly DeviceSecurityOptions None = new();
+
+    /// <summary>Parse a hex key. A present-but-invalid value must fail closed:
+    /// silently ignoring it would run door control without authentication.</summary>
+    public static byte[] ParseHexRequired(string hex, string keyName)
+    {
+        try { return Convert.FromHexString(hex); }
+        catch (FormatException)
+        {
+            throw new InvalidOperationException(
+                $"appsettings.json: \"{keyName}\" is set but not valid hex. " +
+                "Replace the placeholder with the device key, or set it to null to disable PSK.");
+        }
+    }
+
+    /// <summary>Build options from raw config fields (all strings optional).
+    /// Throws InvalidOperationException on a present-but-invalid pskHex.</summary>
+    public static DeviceSecurityOptions FromConfig(
+        bool useTls, string? targetHost, string? certThumbprint, string? pskHex)
+        => new()
+        {
+            UseTls = useTls,
+            TargetHost = targetHost,
+            ExpectedCertThumbprint = certThumbprint,
+            Psk = pskHex is { Length: > 0 } ? ParseHexRequired(pskHex, "PskHex") : null,
+        };
+}

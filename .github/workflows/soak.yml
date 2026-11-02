@@ -1,0 +1,38 @@
+name: Soak (24h run)
+
+on:
+  schedule:
+    - cron: '0 15 * * 6'   # Sat 00:00 JST
+  workflow_dispatch:
+    inputs:
+      hours:
+        description: 'Duration in hours'
+        required: false
+        default: '24'
+
+jobs:
+  soak:
+    runs-on: windows-latest
+    timeout-minutes: 1500
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Build FakeDevice + LongRun
+        run: |
+          dotnet build tests/FakeDevice --configuration Release
+          dotnet build tests/LongRun --configuration Release
+      - name: Run soak test
+        run: |
+          Start-Process -FilePath "tests/FakeDevice/bin/Release/net8.0/FakeDevice.exe" -ArgumentList "--port 50001 --events 3"
+          Start-Sleep -Seconds 2
+          tests/LongRun/bin/Release/net8.0/LongRun.exe --hours ${{ github.event.inputs.hours || '24' }} --port 50001
+        shell: pwsh
+      - name: Upload comm logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soak-logs
+          path: tests/LongRun/bin/Release/net8.0/logs/
+          if-no-files-found: ignore
