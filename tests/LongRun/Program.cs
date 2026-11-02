@@ -1,9 +1,11 @@
 // LongRun: 24h continuous-operation soak test against FakeDevice.
 // Usage:
 //   dotnet run --project tests/FakeDevice -- --port 50001 --events 3 &
-//   dotnet run --project tests/LongRun -- --hours 24 --port 50001
+//   dotnet run --project tests/LongRun -- --hours 24 --port 50001 [--warmup-min 2]
 // Periodically records process memory/handles; at the end reports drift
-// (memory-leak check per RULES: メモリリークゼロ).
+// (memory-leak check per RULES: メモリリークゼロ). The baseline is taken
+// AFTER a warmup period (--warmup-min, default 2min) so JIT/startup growth
+// is not misjudged as drift.
 using System.Net;
 using Monitoring.Core;
 using Monitoring.Net;
@@ -15,8 +17,8 @@ for (int i = 0; i < args.Length; i += 2)
 double hours = double.Parse(opts.GetValueOrDefault("hours", "24"));
 int port = int.Parse(opts.GetValueOrDefault("port", "50001"));
 var host = opts.GetValueOrDefault("host", "127.0.0.1");
+double warmupMin = double.Parse(opts.GetValueOrDefault("warmup-min", "2"));
 var sampleEvery = TimeSpan.FromMinutes(5);
-var deadline = DateTimeOffset.UtcNow.AddHours(hours);
 
 var log = new CommunicationLog(Path.Combine(AppContext.BaseDirectory, "logs"));
 var client = new TcpDeviceClient(new IPEndPoint(IPAddress.Parse(host), port), log: log);
@@ -32,7 +34,13 @@ monitor.ConnectionChanged += (_, s) => { if (s == ConnectionState.Connected) rec
 monitor.Start();
 var proc = System.Diagnostics.Process.GetCurrentProcess();
 var samples = new List<(DateTimeOffset T, long Mem, int Threads, int Handles)>();
-Console.WriteLine($"Soak started; duration={hours}h target={host}:{port}");
+Console.WriteLine($"Soak started; warmup={warmupMin}min duration={hours}h target={host}:{port}");
+
+// let JIT, connection setup and initial buffers settle so the memory baseline
+// is post-warmup — otherwise normal startup growth counts as "leak" drift
+try { await Task.Delay(TimeSpan.FromMinutes(warmupMin)); } catch { }
+var deadline = DateTimeOffset.UtcNow.AddHours(hours);
+Console.WriteLine($"Baseline taken at {DateTimeOffset.Now:HH:mm:ss}; running until {deadline.LocalDateTime:HH:mm:ss}");
 
 while (DateTimeOffset.UtcNow < deadline)
 {

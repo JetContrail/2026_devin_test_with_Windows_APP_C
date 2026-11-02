@@ -1,11 +1,13 @@
 using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 
 namespace Monitoring.Net;
 
 /// <summary>
 /// Rotating JSON-Lines communication log (protocol spec §6):
-/// logs/comm[-label]-YYYYMMDD.log, max 16MB per file, sequence-numbered rollover.
+/// logs/comm[-label[-hash]]-YYYYMMDD.log, max 16MB per file, sequence-numbered rollover.
 /// Write failures are isolated: the log disables itself after repeated errors and
 /// never propagates exceptions into the communication path.
 /// </summary>
@@ -25,9 +27,19 @@ public sealed class CommunicationLog : IDisposable
     private bool _disposed;
     private bool _disabled;
 
+    private readonly string _filePrefix;
+
     public CommunicationLog(string directory, string? label = null)
     {
-        _label = label is null ? null : Sanitize(label);
+        _label = label;
+        _filePrefix = label is null
+            ? "comm"
+            : Sanitize(label) is var san && san == label
+                ? $"comm-{san}"
+                // sanitized label differs from the raw name (e.g. "Front Door"
+                // vs "Front_Door") — add a stable tag of the raw label so two
+                // device names that collide after sanitization get distinct files
+                : $"comm-{san}-{StableTag(label)}";
         try
         {
             Directory.CreateDirectory(directory);
@@ -44,6 +56,9 @@ public sealed class CommunicationLog : IDisposable
         var chars = label.Select(c => char.IsLetterOrDigit(c) || c is '-' or '_' ? c : '_').ToArray();
         return new string(chars);
     }
+
+    private static string StableTag(string label)
+        => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(label)))[..8];
 
     public void Frame(string direction, byte type, ushort sequence, int length, bool crcOk, string? note = null)
         => Write(direction, type, sequence, length, crcOk, note);
@@ -97,12 +112,11 @@ public sealed class CommunicationLog : IDisposable
             return;
         _writer?.Dispose();
         if (_currentDate != date) { _currentDate = date; _fileSeq = 0; }
-        string prefix = _label is null ? "comm" : $"comm-{_label}";
         string path;
         do
         {
             var suffix = _fileSeq == 0 ? "" : $".{_fileSeq}";
-            path = Path.Combine(_directory!, $"{prefix}-{date}{suffix}.log");
+            path = Path.Combine(_directory!, $"{_filePrefix}-{date}{suffix}.log");
             _fileSeq++;
         } while (File.Exists(path) && new FileInfo(path).Length >= MaxFileBytes);
         _writer = new StreamWriter(new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read));

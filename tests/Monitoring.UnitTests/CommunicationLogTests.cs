@@ -28,6 +28,28 @@ public class CommunicationLogTests
     }
 
     [Fact]
+    public void Write_LabelsCollidingAfterSanitize_GetDistinctFiles()
+    {
+        // regression: "Front Door" and "Front_Door" both sanitize to
+        // "Front_Door" — without a raw-name tag they'd share one file
+        var dir = Path.Combine(Path.GetTempPath(), $"commlog-test-{Guid.NewGuid():N}");
+        try
+        {
+            using (var a = new CommunicationLog(dir, "Front Door"))
+                a.Event("a");
+            using (var b = new CommunicationLog(dir, "Front_Door"))
+                b.Event("b");
+            var files = Directory.GetFiles(dir).Select(Path.GetFileName).ToArray();
+            Assert.Equal(2, files.Length);
+            Assert.Contains(files, f => f!.StartsWith("comm-Front_Door-", StringComparison.Ordinal));
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    [Fact]
     public void Write_WhenLogFileCannotBeCreated_DoesNotThrow()
     {
         // regression: a log write failure must never propagate into the
