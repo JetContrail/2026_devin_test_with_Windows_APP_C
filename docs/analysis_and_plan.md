@@ -94,19 +94,23 @@
 ```
 MonitoringApp/
 ├── src/
-│   ├── App/                  # WPF(View, ViewModel)
-│   ├── Core/                 # ドメインロジック・状態機械(GUI非依存)
-│   ├── Net/                  # TCPクライアント、フレーミング、再接続(GUI非依存)
-│   └── Protocol/             # パケット定義・エンコード/デコード
+│   ├── Gui.Contract/         # GUIプラグイン契約 IMonitorGui(GUI非依存)
+│   ├── Core/                 # ポーリングエンジン・状態機械・ドア開放監視(GUI非依存)
+│   ├── Net/                  # UDPクライアント、シーケンス照合、タイムアウト/再送(GUI非依存)
+│   ├── Protocol/             # フレーム/メッセージ定義・エンコード/デコード・CRC16
+│   ├── AppHost/              # 起動シェル: 接続・Monitor生成 + ユーザー別GUIプラグインのロード
+│   └── App.Wpf/              # 標準GUIプラグイン(WPF)。ユーザー毎に別DLLを追加可能
 ├── tests/
-│   ├── Unit/                 # Core/Net/Protocolの単体試験
-│   ├── Integration/          # 疑似デバイス(エコー/異常系サーバ)との結合試験
-│   └── Tools/FakeDevice/     # 試験用デバイスシミュレータ
+│   ├── Monitoring.UnitTests/        # Protocol/Coreの単体試験
+│   ├── Monitoring.IntegrationTests/ # 実UDPループバック結合試験
+│   └── FakeDevice/                  # 試験用デバイスシミュレータ(故障注入可)
 ├── docs/
-└── .github/workflows/        # build, test, static analysis
+└── .github/workflows/               # build + test (windows-latest)
 ```
 
-設計原則: Net/ProtocolはUI非依存のクラスライブラリ。GUIは`IDeviceClient`抽象を介してのみ通信層に触れる。状態変化はイベント/IObservableでUIへ通知。
+設計原則:
+- Net/Protocol/CoreはUI非依存のクラスライブラリ。GUIは`DeviceMonitor`のイベント経由でのみ状態を受け取る(UIスレッドでのブロッキングI/O禁止)。
+- **GUIはユーザー毎に独立**: AppHostが `gui_plugins.json` の「Windowsユーザー名 → GUI DLL」マッピング(`*`がフォールバック)で `IMonitorGui` 実装をロードする。ユーザー別GUIは `IMonitorGui` を実装するDLLを追加するだけで、アプリ本体・通信層は全ユーザー共通。
 
 ## 5. テスト戦略
 
@@ -120,9 +124,19 @@ MonitoringApp/
 
 CI方針: PRごとに `build → unit → integration → static analysis (Roslyn analyzers / optional: security)`。長時間試験とGUI自動試験はnightlyに分離し、PRを遅くしない。
 
-## 6. プロダクトオーナーへの確認事項
+## 6. プロダクトオーナーへの確認事項 — 回答済み(2026-11-02)
 
-1. **言語方針**: READMEは「C言語」だが、本提案はC# (.NET 8 + WPF)。承認いただけますか? C言語必須なら代替構成を再検討します。
-2. **対向デバイス**: プロトコル仕様(ポート、フォーマット、周期)は既存規定がありますか? なければ本チームで仕様書を起案します。
-3. **監視項目・制御項目**: 最低限必要な表示項目と制御コマンドの初期セットをご指定ください。
-4. **配布・運用形態**: インストーラ必須か、社内限定か、連続運転時間の要件。
+1. **言語方針**: ✅ **C# (.NET 8 + WPF) 承認**
+2. **対向デバイス通信**: ✅ **UDP。本アプリ側からのポーリング(request/response)**
+3. **監視項目**: ✅ **鍵の状態、ドア開閉状態(開きっぱなし監視を含む)、鍵用カードリーダー**
+   **制御項目**: ✅ **鍵(施錠/解錠)**
+4. **運用形態**: ✅ **24時間常時監視**
+5. **GUI構成**: ✅ **ユーザー毎にGUIが異なるため、アプリとは独立した構成(GUIプラグイン)にする**
+
+上記を受け、`docs/protocol_spec.md` にUDPポーリングプロトコル仕様書を起案した。
+24時間常時監視の要件から、以下が特に重要となる:
+
+- ポーリング応答なし → 接続状態を `Lost` に遷移しUIへ即通知
+- 長時間運転のメモリ・ハンドルリーク監視(Phase 4の長時間試験で検証)
+- ドア開きっぱなし: 開状態が設定時間(例: 60秒、設定可能)を超えたらアラート
+- カードリーダー: デバイス側でイベントを保持し、ポーリング応答に含めて取得
