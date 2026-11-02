@@ -240,7 +240,15 @@ public sealed class TcpDeviceClient : IDeviceClient
                     Raise(TransportLinkState.Reconnecting);
                     await Task.Delay(NextBackoff(f), ct).ConfigureAwait(false);
                 }
-                catch (OperationCanceledException) { tcp?.Dispose(); throw; }
+                catch (OperationCanceledException)
+                {
+                    // caller cancelled mid-handshake: _stream may already be set but
+                    // unauthenticated — kill it so the next request starts a full
+                    // connect+TLS+auth instead of riding an unauthenticated link
+                    tcp?.Dispose();
+                    KillSocket("connect attempt cancelled");
+                    throw;
+                }
                 catch (Exception ex)
                 {
                     tcp?.Dispose();

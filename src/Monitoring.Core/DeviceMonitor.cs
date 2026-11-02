@@ -168,12 +168,16 @@ public sealed class DeviceMonitor : IAsyncDisposable
             var page = await _client.GetCardEventsAsync(_lastCardEventSeq, ct).ConfigureAwait(false);
             if (page.BootId != _lastCardEventBootId)
             {
-                // device rebooted: its event sequence restarted, so the old cursor
-                // would silently skip the new generation's early events — reset and
-                // refetch from the beginning of the new generation
                 _lastCardEventBootId = page.BootId;
-                _lastCardEventSeq = 0;
-                page = await _client.GetCardEventsAsync(0, ct).ConfigureAwait(false);
+                if (_lastCardEventSeq > 0)
+                {
+                    // real generation change mid-run: the old cursor would skip the
+                    // new generation's early events — reset and refetch from 0.
+                    // (cursor==0 → this page already holds everything; refetching
+                    // could lose events on devices that delete served entries)
+                    _lastCardEventSeq = 0;
+                    page = await _client.GetCardEventsAsync(0, ct).ConfigureAwait(false);
+                }
             }
             foreach (var e in page.Events.OrderBy(e => e.EventSeq))
             {

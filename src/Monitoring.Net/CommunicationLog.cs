@@ -79,7 +79,10 @@ public sealed class CommunicationLog : IDisposable
             {
                 // a full/read-only disk or vanished log dir must not stop monitoring:
                 // close the writer, retry on the next call, then give up quietly
-                try { _writer?.Dispose(); } catch (ObjectDisposedException) { }
+                // Dispose flushes buffered data — that flush can itself hit the
+                // same I/O failure, so it needs the same isolation
+                try { _writer?.Dispose(); }
+                catch (Exception disposeError) when (disposeError is IOException or UnauthorizedAccessException or ObjectDisposedException) { }
                 _writer = null;
                 if (++_failures >= MaxConsecutiveFailures)
                     _disabled = true;

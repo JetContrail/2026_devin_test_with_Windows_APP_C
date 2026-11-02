@@ -50,6 +50,15 @@ public class SecurityConfigTests
         Assert.Contains("AllowInsecure", ex.Message);
     }
 
+    // a brute-forceable PSK must be rejected even when auth is "enabled"
+    [Fact]
+    public void FromConfig_ShortPsk_Throws()
+    {
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            DeviceSecurityOptions.FromConfig(true, "DoorDevice", "AA00", "AABB"));
+        Assert.Contains("PskHex", ex.Message);
+    }
+
     [Fact]
     public void FromConfig_InsecureWithOptIn_Allowed()
     {

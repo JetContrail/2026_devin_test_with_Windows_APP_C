@@ -45,12 +45,17 @@ public sealed record DeviceSecurityOptions
             throw new InvalidOperationException(
                 "appsettings.json: secure transport is required — set \"UseTls\": true and a valid \"PskHex\", " +
                 "or set \"AllowInsecure\": true explicitly for lab/demo use only.");
+        var psk = pskHex is { Length: > 0 } ? ParseHexRequired(pskHex, "PskHex") : null;
+        if (psk is { Length: < 16 })
+            throw new InvalidOperationException(
+                "appsettings.json: \"PskHex\" must be at least 16 bytes (32 hex chars) — " +
+                "a shorter key can be brute-forced from an observed AuthHello.");
         return new()
         {
             UseTls = useTls,
             TargetHost = targetHost,
             ExpectedCertThumbprint = certThumbprint,
-            Psk = pskHex is { Length: > 0 } ? ParseHexRequired(pskHex, "PskHex") : null,
+            Psk = psk,
         };
     }
 }
